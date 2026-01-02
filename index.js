@@ -39,13 +39,15 @@ app.use(
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (ORIGINS.includes(origin)) return cb(null, true);
-      return cb(null, true); // ✅ لو تبين تقفلينه: استبدليها بـ cb(new Error("Not allowed by CORS"))
+      // ✅ مفتوح — لو تبين تقفلينه: cb(new Error("Not allowed by CORS"))
+      return cb(null, true);
     },
     credentials: true,
   })
 );
 
 app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 // __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -126,7 +128,6 @@ function isMissingColumn(err) {
 
 /* =====================================================
    Active Column Resolver (users.active vs users.is_active)
-   ✅ يمنع خطأ: column "active" does not exist
 ===================================================== */
 let __usersActiveColCache = null;
 
@@ -175,12 +176,17 @@ async function canAccessCase(caseId, user) {
   if (!user) return false;
   if (roleOf(user) === "manager") return true;
 
-  const q = await pool.query(
-    // ✅ user_id قد يكون رقمي أو UUID
-    `SELECT 1 FROM assignments WHERE case_id=$1 AND user_id::text=$2 LIMIT 1`,
-    [Number(caseId), String(user.id)]
-  );
-  return q.rowCount > 0;
+  try {
+    const q = await pool.query(
+      `SELECT 1 FROM assignments WHERE case_id=$1 AND user_id=$2 LIMIT 1`,
+      [Number(caseId), Number(user.id)]
+    );
+    return q.rowCount > 0;
+  } catch (e) {
+    // لو جدول assignments مو موجود لأي سبب
+    if (isMissingTable(e)) return false;
+    return false;
+  }
 }
 
 /* =====================================================
@@ -226,7 +232,6 @@ app.post("/auth/login", async (req, res) => {
 
     const activeCol = await getUsersActiveCol();
 
-    // ✅ نبني SELECT بدون ذكر عمود غير موجود
     const sql = `
       SELECT id, password_hash, role${activeCol ? `, ${activeCol} AS active` : ", true AS active"}
       FROM users
@@ -255,11 +260,9 @@ app.post("/auth/login", async (req, res) => {
 
 app.get("/me", auth, async (req, res) => {
   try {
-    // ✅ يدعم id رقمي أو UUID
-    const q = await pool.query(
-      `SELECT id, email, full_name, role FROM users WHERE id::text=$1`,
-      [String(req.user.id)]
-    );
+    const q = await pool.query(`SELECT id, email, full_name, role FROM users WHERE id=$1`, [
+      Number(req.user.id),
+    ]);
     if (!q.rowCount) return res.status(404).json({ error: "user_not_found" });
     return res.json(q.rows[0]);
   } catch (e) {
@@ -286,20 +289,16 @@ app.post("/auth/register", async (req, res) => {
     const password_hash = await bcrypt.hash(password, 10);
     const activeCol = await getUsersActiveCol();
 
-    try {
-      const q = await pool.query(
-        `
-        INSERT INTO users (full_name, email, password_hash, role${activeCol ? `, ${activeCol}` : ""}, created_at)
-        VALUES ($1, $2, $3, 'staff'${activeCol ? ", false" : ""}, NOW())
-        RETURNING id, full_name, email, role
-        `,
-        [full_name, email, password_hash]
-      );
-      return res.status(201).json({ ok: true, user: q.rows[0] });
-    } catch (e) {
-      console.error("POST /auth/register insert:", e.message);
-      return res.status(500).json({ error: "server_error" });
-    }
+    const q = await pool.query(
+      `
+      INSERT INTO users (full_name, email, password_hash, role${activeCol ? `, ${activeCol}` : ""}, created_at)
+      VALUES ($1, $2, $3, 'staff'${activeCol ? ", false" : ""}, NOW())
+      RETURNING id, full_name, email, role
+      `,
+      [full_name, email, password_hash]
+    );
+
+    return res.status(201).json({ ok: true, user: q.rows[0] });
   } catch (e) {
     console.error("POST /auth/register:", e.message);
     return res.status(500).json({ error: "server_error" });
@@ -473,7 +472,7 @@ app.get("/cases", auth, async (req, res) => {
       WHERE a.user_id = $1
       ORDER BY a.assigned_at DESC NULLS LAST, a.id DESC
       `,
-      [String(req.user.id)]
+      [Number(req.user.id)]
     );
     return res.json(q.rows || []);
   } catch (e) {
@@ -767,7 +766,7 @@ app.post("/assign", auth, async (req, res) => {
       INSERT INTO assignments (case_id, user_id, note, assigned_by, assigned_at)
       VALUES ($1,$2,$3,$4,NOW())
       `,
-      [caseId, userId, note || null, String(req.user.id)]
+      [caseId, userId, note || null, Number(req.user.id)]
     );
 
     try {
@@ -814,7 +813,7 @@ app.get("/my/cases", auth, async (req, res) => {
       WHERE a.user_id = $1
       ORDER BY a.assigned_at DESC NULLS LAST, a.id DESC
       `,
-      [String(req.user.id)]
+      [Number(req.user.id)]
     );
 
     return res.json(q.rows || []);
@@ -990,7 +989,7 @@ app.post("/cases/:cid/sessions/:sid/summary", auth, async (req, res) => {
         WHERE id=$3 AND case_id=$4
         RETURNING *
         `,
-        [summary, String(req.user.id), sessionId, caseId]
+        [summary, Number(req.user.id), sessionId, caseId]
       );
       if (!q.rowCount) return res.status(404).json({ error: "not_found" });
 
@@ -1014,68 +1013,64 @@ app.post("/cases/:cid/sessions/:sid/summary", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Documents
+   Documents (case_documents)
+   DB columns (confirmed): id, case_id, name, uploaded_by, uploaded_at, title, file_name
+   - file_name: may hold either uploaded filename OR an external URL
 ===================================================== */
+
+function toFileUrl(fileNameOrUrl) {
+  const raw = (fileNameOrUrl || "").toString().trim();
+  if (!raw) return null;
+  const isHttp = raw.startsWith("http://") || raw.startsWith("https://");
+  return isHttp ? raw : `/uploads/${raw}`;
+}
+
 app.get("/cases/:id/docs", auth, async (req, res) => {
-  const caseId = Number(req.params.id);
-  if (!caseId) return res.json([]);
+  try {
+    const caseId = Number(req.params.id);
+    if (!caseId) return res.json([]);
 
-  const ok = await canAccessCase(caseId, req.user);
-  if (!ok) return res.status(403).json({ error: "forbidden" });
+    const ok = await canAccessCase(caseId, req.user);
+    if (!ok) return res.status(403).json({ error: "forbidden" });
 
-  const tries = [
-    `
-    SELECT
-      id,
-      case_id AS "caseId",
-      name AS "name",
-      file_url AS "fileUrl",
-      uploaded_by AS "uploadedBy",
-      uploaded_at AS "uploadedAt"
-    FROM case_documents
-    WHERE case_id=$1
-    ORDER BY uploaded_at DESC NULLS LAST, id DESC
-    `,
-    `
-    SELECT
-      id,
-      case_id AS "caseId",
-      COALESCE(title, file_name) AS "name",
-      file_url AS "fileUrl",
-      uploaded_by AS "uploadedBy",
-      uploaded_at AS "uploadedAt"
-    FROM case_documents
-    WHERE case_id=$1
-    ORDER BY uploaded_at DESC NULLS LAST, id DESC
-    `,
-    `
-    SELECT
-      id,
-      case_id AS "caseId",
-      name AS "name",
-      NULL::text AS "fileUrl",
-      NULL::text AS "uploadedBy",
-      NULL::timestamptz AS "uploadedAt"
-    FROM case_documents
-    WHERE case_id=$1
-    ORDER BY id DESC
-    `,
-  ];
+    const q = await pool.query(
+      `
+      SELECT
+        id,
+        case_id AS "caseId",
+        COALESCE(NULLIF(name,''), NULLIF(title,''), NULLIF(file_name,''), 'مستند') AS "name",
+        title AS "title",
+        file_name AS "fileName",
+        uploaded_by AS "uploadedBy",
+        uploaded_at AS "uploadedAt"
+      FROM case_documents
+      WHERE case_id=$1
+      ORDER BY uploaded_at DESC NULLS LAST, id DESC
+      `,
+      [caseId]
+    );
 
-  for (const sql of tries) {
-    try {
-      const q = await pool.query(sql, [caseId]);
-      return res.json(q.rows || []);
-    } catch (e) {
-      if (isMissingTable(e)) return res.json([]);
-      if (isMissingColumn(e)) continue;
-      return res.json([]);
-    }
+    const rows = Array.isArray(q.rows) ? q.rows : [];
+    const out = rows.map((r) => ({
+      id: r.id,
+      caseId: r.caseId,
+      name: r.name || "مستند",
+      uploadedBy: r.uploadedBy || null,
+      uploadedAt: r.uploadedAt || null,
+      fileName: r.fileName || null,
+      fileUrl: toFileUrl(r.fileName),
+    }));
+
+    return res.json(out);
+  } catch (e) {
+    if (isMissingTable(e)) return res.json([]);
+    if (isMissingColumn(e)) return res.json([]);
+    console.error("GET /cases/:id/docs:", e.message);
+    return res.json([]);
   }
-
-  return res.json([]);
 });
 
+// ✅ إضافة مستند كرابط (اختياري)
 app.post("/cases/:id/docs", auth, async (req, res) => {
   try {
     const caseId = Number(req.params.id);
@@ -1084,37 +1079,51 @@ app.post("/cases/:id/docs", auth, async (req, res) => {
     const ok = await canAccessCase(caseId, req.user);
     if (!ok) return res.status(403).json({ error: "forbidden" });
 
-    const name = String(req.body?.name || "").trim();
-    const fileUrl = req.body?.fileUrl || req.body?.file_url || null;
+    const name = String(req.body?.name || req.body?.title || "").trim();
     if (!name) return res.status(400).json({ error: "name_required" });
 
-    try {
-      const q = await pool.query(
-        `
-        INSERT INTO case_documents (case_id, name, file_url, uploaded_by, uploaded_at)
-        VALUES ($1,$2,$3,$4,NOW())
-        RETURNING
-          id,
-          case_id AS "caseId",
-          name AS "name",
-          file_url AS "fileUrl",
-          uploaded_by AS "uploadedBy",
-          uploaded_at AS "uploadedAt"
-        `,
-        [caseId, name, fileUrl, String(req.user.id)]
-      );
+    // رابط اختياري
+    const fileUrl = String(req.body?.fileUrl || req.body?.file_url || "").trim();
+    const fileNameOrUrl = fileUrl || null;
 
-      return res.status(201).json(q.rows[0]);
-    } catch (e) {
-      if (isMissingTable(e)) return res.status(400).json({ error: "docs_table_missing" });
-      throw e;
-    }
+    const uid = String(req.user.id);
+
+    const q = await pool.query(
+      `
+      INSERT INTO case_documents
+        (case_id, name, title, file_name, uploaded_by, uploaded_at)
+      VALUES
+        ($1,$2,$3,$4,$5::text,NOW())
+      RETURNING
+        id,
+        case_id AS "caseId",
+        name AS "name",
+        title AS "title",
+        file_name AS "fileName",
+        uploaded_by AS "uploadedBy",
+        uploaded_at AS "uploadedAt"
+      `,
+      [caseId, name, name, fileNameOrUrl, uid]
+    );
+
+    const row = q.rows[0];
+    return res.status(201).json({
+      id: row.id,
+      caseId: row.caseId,
+      name: row.name || name,
+      uploadedBy: row.uploadedBy || uid,
+      uploadedAt: row.uploadedAt || null,
+      fileName: row.fileName || null,
+      fileUrl: toFileUrl(row.fileName),
+    });
   } catch (e) {
+    if (isMissingTable(e)) return res.status(400).json({ error: "docs_table_missing" });
     console.error("POST /cases/:id/docs:", e.message);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
+// ✅ رفع ملف فعلي (هذا اللي كان ناقص ويسبب 404)
 app.post("/cases/:id/docs/upload", auth, upload.single("file"), async (req, res) => {
   try {
     const caseId = Number(req.params.id);
@@ -1125,32 +1134,47 @@ app.post("/cases/:id/docs/upload", auth, upload.single("file"), async (req, res)
 
     if (!req.file) return res.status(400).json({ error: "file_required" });
 
-    const fileUrl = `/uploads/${req.file.filename}`;
-    const name = req.body?.name || req.file.originalname;
+    const storedFileName = req.file.filename;
+    const originalName = req.file.originalname || "";
+    const name = String(req.body?.name || originalName || "مستند").trim();
+
+    const uid = String(req.user.id);
 
     const q = await pool.query(
       `
       INSERT INTO case_documents
-        (case_id, name, file_url, uploaded_by, uploaded_at)
-      VALUES ($1,$2,$3,$4,NOW())
+        (case_id, name, title, file_name, uploaded_by, uploaded_at)
+      VALUES
+        ($1,$2,$3,$4,$5::text,NOW())
       RETURNING
         id,
         case_id AS "caseId",
         name AS "name",
-        file_url AS "fileUrl",
+        title AS "title",
+        file_name AS "fileName",
         uploaded_by AS "uploadedBy",
         uploaded_at AS "uploadedAt"
       `,
-      [caseId, String(name), String(fileUrl), String(req.user.id)]
+      [caseId, name, name, storedFileName, uid]
     );
 
-    return res.status(201).json(q.rows[0]);
+    const row = q.rows[0];
+    return res.status(201).json({
+      id: row.id,
+      caseId: row.caseId,
+      name: row.name || name,
+      uploadedBy: row.uploadedBy || uid,
+      uploadedAt: row.uploadedAt || null,
+      fileName: row.fileName || storedFileName,
+      fileUrl: toFileUrl(row.fileName || storedFileName),
+    });
   } catch (e) {
     console.error("UPLOAD DOC:", e.message);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
+// تعديل اسم المستند (مدير)
 app.patch("/cases/:cid/docs/:docId", auth, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -1175,6 +1199,7 @@ app.patch("/cases/:cid/docs/:docId", auth, async (req, res) => {
   }
 });
 
+// حذف مستند
 app.delete("/cases/:cid/docs/:docId", auth, async (req, res) => {
   try {
     const caseId = Number(req.params.cid);
@@ -1251,7 +1276,7 @@ app.post("/cases/:id/notes", auth, async (req, res) => {
         VALUES ($1,$2,$3,NOW())
         RETURNING id, case_id AS "caseId", body, created_by AS "createdBy", created_at AS "createdAt"
         `,
-        [caseId, body, String(req.user.id)]
+        [caseId, body, Number(req.user.id)]
       );
       return res.status(201).json(q.rows[0]);
     } catch (e) {
@@ -1325,7 +1350,6 @@ app.get("/cases/:id/timeline", auth, async (req, res) => {
 
 /* =====================================================
    Notifications
-   ✅ دعم unread=1 لأن الواجهة تناديه
 ===================================================== */
 app.get("/notifications", auth, async (req, res) => {
   try {
@@ -1342,7 +1366,7 @@ app.get("/notifications", auth, async (req, res) => {
         ORDER BY created_at DESC
         LIMIT 100
         `,
-        [String(req.user.id)]
+        [Number(req.user.id)]
       );
       return res.json(q.rows || []);
     } catch (e) {
@@ -1363,7 +1387,7 @@ app.post("/notifications/:id/read", auth, async (req, res) => {
     try {
       await pool.query(`UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2`, [
         id,
-        String(req.user.id),
+        Number(req.user.id),
       ]);
       return res.json({ ok: true });
     } catch (e) {
@@ -1381,16 +1405,17 @@ app.post("/notifications/:id/read", auth, async (req, res) => {
 ===================================================== */
 app.get("/my/tasks", auth, async (req, res) => {
   try {
+    const uid = String(req.user.id);
     const q = await pool.query(
       `
       SELECT id, user_id AS "userId", title, done, due_at AS "dueAt",
              created_at AS "createdAt", updated_at AS "updatedAt"
       FROM my_tasks
-      WHERE user_id=$1
+      WHERE user_id::text=$1
       ORDER BY created_at DESC, id DESC
       LIMIT 500
       `,
-      [String(req.user.id)]
+      [uid]
     );
     return res.json(q.rows || []);
   } catch (e) {
@@ -1402,6 +1427,7 @@ app.get("/my/tasks", auth, async (req, res) => {
 
 app.post("/my/tasks", auth, async (req, res) => {
   try {
+    const uid = String(req.user.id);
     const title = String(req.body?.title || "").trim();
     const due_at = req.body?.due_at ?? null;
     if (!title) return res.status(400).json({ error: "title_required" });
@@ -1414,7 +1440,7 @@ app.post("/my/tasks", auth, async (req, res) => {
         RETURNING id, user_id AS "userId", title, done, due_at AS "dueAt",
                   created_at AS "createdAt", updated_at AS "updatedAt"
         `,
-        [String(req.user.id), title, due_at]
+        [uid, title, due_at]
       );
       return res.status(201).json(q.rows[0]);
     } catch (e) {
@@ -1423,6 +1449,81 @@ app.post("/my/tasks", auth, async (req, res) => {
     }
   } catch (e) {
     console.error("POST /my/tasks:", e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.patch("/my/tasks/:id", auth, async (req, res) => {
+  try {
+    const uid = String(req.user.id);
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "invalid_id" });
+
+    const body = req.body || {};
+    const hasDone = Object.prototype.hasOwnProperty.call(body, "done");
+    const hasTitle = Object.prototype.hasOwnProperty.call(body, "title");
+    const hasDue =
+      Object.prototype.hasOwnProperty.call(body, "due_at") ||
+      Object.prototype.hasOwnProperty.call(body, "dueAt");
+
+    if (!hasDone && !hasTitle && !hasDue) return res.status(400).json({ error: "no_changes" });
+
+    const fields = [];
+    const vals = [];
+    let i = 1;
+
+    if (hasTitle) {
+      const title = String(body.title || "").trim();
+      if (!title) return res.status(400).json({ error: "title_required" });
+      fields.push(`title=$${i++}`);
+      vals.push(title);
+    }
+    if (hasDone) {
+      fields.push(`done=$${i++}`);
+      vals.push(!!body.done);
+    }
+    if (hasDue) {
+      const due = body.due_at ?? body.dueAt ?? null;
+      fields.push(`due_at=$${i++}`);
+      vals.push(due);
+    }
+
+    fields.push(`updated_at=NOW()`);
+    vals.push(uid);
+    vals.push(id);
+
+    const q = await pool.query(
+      `
+      UPDATE my_tasks
+      SET ${fields.join(", ")}
+      WHERE user_id::text=$${i++} AND id=$${i++}
+      RETURNING id, user_id AS "userId", title, done, due_at AS "dueAt",
+                created_at AS "createdAt", updated_at AS "updatedAt"
+      `,
+      vals
+    );
+
+    if (!q.rowCount) return res.status(404).json({ error: "not_found" });
+    return res.json(q.rows[0]);
+  } catch (e) {
+    if (isMissingTable(e)) return res.status(400).json({ error: "tasks_table_missing" });
+    console.error("PATCH /my/tasks/:id:", e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.delete("/my/tasks/:id", auth, async (req, res) => {
+  try {
+    const uid = String(req.user.id);
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: "invalid_id" });
+
+    const q = await pool.query(`DELETE FROM my_tasks WHERE user_id::text=$1 AND id=$2`, [uid, id]);
+    if (!q.rowCount) return res.status(404).json({ error: "not_found" });
+    return res.json({ ok: true });
+  } catch (e) {
+    if (isMissingTable(e)) return res.status(400).json({ error: "tasks_table_missing" });
+    console.error("DELETE /my/tasks/:id:", e.message);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -1492,7 +1593,7 @@ app.post("/drafts", auth, async (req, res) => {
                   created_by AS "createdBy", created_at AS "createdAt",
                   updated_at AS "updatedAt"
         `,
-        [caseId ? Number(caseId) : null, title, body, payload.status || "pending", String(req.user.id)]
+        [caseId ? Number(caseId) : null, title, body, payload.status || "pending", Number(req.user.id)]
       );
       return res.status(201).json(q.rows[0]);
     } catch (e) {
