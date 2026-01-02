@@ -260,7 +260,10 @@ app.get("/me", auth, async (req, res) => {
 app.post("/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    if (!email || !password) {
+    const emailNorm = String(email || "").trim();
+    const passNorm = String(password || "").trim();
+
+    if (!emailNorm || !passNorm) {
       return res.status(400).json({ error: "missing_credentials" });
     }
 
@@ -273,11 +276,11 @@ app.post("/auth/login", async (req, res) => {
         password_hash,
         role,
         ${activeCol} AS is_active
-      FROM users
+      FROM public.users
       WHERE lower(email) = lower($1)
       LIMIT 1
       `,
-      [email]
+      [emailNorm]
     );
 
     if (!q.rowCount) {
@@ -290,7 +293,7 @@ app.post("/auth/login", async (req, res) => {
       return res.status(403).json({ error: "inactive" });
     }
 
-    const ok = await bcrypt.compare(password, user.password_hash);
+    const ok = await bcrypt.compare(passNorm, user.password_hash);
     if (!ok) {
       return res.status(400).json({ error: "invalid_credentials" });
     }
@@ -313,10 +316,10 @@ app.post("/auth/login", async (req, res) => {
 
 app.get("/me", auth, async (req, res) => {
   try {
-const q = await pool.query(
-  "SELECT id, email, full_name, role FROM users WHERE id=$1",
-  [Number(req.user.id)]
-);
+    const q = await pool.query(
+      "SELECT id, email, full_name, role FROM public.users WHERE id=$1",
+      [Number(req.user.id)]
+    );
     if (!q.rowCount) {
       return res.status(404).json({ error: "user_not_found" });
     }
@@ -341,7 +344,7 @@ app.post("/auth/register", async (req, res) => {
     if (!password) return res.status(400).json({ error: "password_required" });
 
     const exists = await pool.query(
-      `SELECT 1 FROM users WHERE lower(email)=lower($1) LIMIT 1`,
+      `SELECT 1 FROM public.users WHERE lower(email)=lower($1) LIMIT 1`,
       [email]
     );
     if (exists.rowCount) return res.status(409).json({ error: "email_exists" });
@@ -352,7 +355,7 @@ app.post("/auth/register", async (req, res) => {
 
     const q = await pool.query(
       `
-      INSERT INTO users (full_name, email, password_hash, role, ${activeCol}, created_at)
+      INSERT INTO public.users (full_name, email, password_hash, role, ${activeCol}, created_at)
       VALUES ($1, $2, $3, 'staff', false, NOW())
       RETURNING id, full_name, email, role, ${activeCol} AS is_active
       `,
@@ -378,7 +381,7 @@ app.get("/auth/pending", auth, async (req, res) => {
     const q = await pool.query(
       `
       SELECT id, email, full_name, role, ${activeCol} AS is_active, created_at
-      FROM users
+      FROM public.users
       WHERE ${activeCol} = false
       ORDER BY created_at DESC NULLS LAST, id DESC
       `
@@ -404,7 +407,7 @@ app.post("/auth/approve", auth, async (req, res) => {
 
     const q = await pool.query(
       `
-      UPDATE users
+      UPDATE public.users
       SET ${activeCol}=true
       WHERE id=$1
       RETURNING id, full_name, email, role, ${activeCol} AS is_active
@@ -433,7 +436,7 @@ app.post("/auth/reject", auth, async (req, res) => {
     const activeCol = await getActiveCol();
 
     const r = await client.query(
-      `UPDATE users SET ${activeCol}=false WHERE id=$1 AND role='staff' RETURNING id`,
+      `UPDATE public.users SET ${activeCol}=false WHERE id=$1 AND role='staff' RETURNING id`,
       [userId]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
@@ -446,6 +449,7 @@ app.post("/auth/reject", auth, async (req, res) => {
     client.release();
   }
 });
+
 
 /* =====================================================
    Employees (Manager)
