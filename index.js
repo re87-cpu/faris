@@ -34,15 +34,12 @@ const ORIGINS = (
   .map((s) => s.trim())
   .filter(Boolean);
 
-const CORS_ALLOW_ALL = String(process.env.CORS_ALLOW_ALL || '').toLowerCase() === 'true';
-
 app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      if (CORS_ALLOW_ALL) return cb(null, true);
       if (ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error('Not allowed by CORS'));
+      return cb(null, true); // ✅ لو تبين تقفلينه: استبدليها بـ cb(new Error("Not allowed by CORS"))
     },
     credentials: true,
   })
@@ -76,7 +73,7 @@ const pool = new Pool({
 
 // تفضيل public (بدون ما يكسر لو عندك schema ثاني)
 pool.on("connect", (client) => {
-  client.query("SET search_path TO public, app").catch(() => {});
+  client.query("SET search_path TO public").catch(() => {});
 });
 
 pool
@@ -97,12 +94,7 @@ pool
 /* =====================================================
    Helpers
 ===================================================== */
-const IS_PROD = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
-const JWT_SECRET = process.env.JWT_SECRET || (IS_PROD ? '' : 'dev-secret-faris');
-if (IS_PROD && !JWT_SECRET) {
-  throw new Error('JWT_SECRET is required in production');
-}
-
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-faris";
 
 function roleOf(u) {
   return String(u?.role || "").trim().toLowerCase();
@@ -145,7 +137,7 @@ async function getUsersActiveCol() {
       `
       SELECT column_name
       FROM information_schema.columns
-      WHERE table_schema IN ('public','app')
+      WHERE table_schema='public'
         AND table_name='users'
         AND column_name IN ('is_active','active')
       `
@@ -158,77 +150,6 @@ async function getUsersActiveCol() {
     __usersActiveColCache = null;
   }
   return __usersActiveColCache;
-}
-
-
-async function getTableSchema(tableName) {
-  const t = String(tableName || '').trim();
-  if (!t) return null;
-  try {
-    const r = await pool.query(
-      `SELECT to_regclass('public.'||$1) AS pub, to_regclass('app.'||$1) AS app`,
-      [t]
-    );
-    if (r.rows?.[0]?.pub) return 'public';
-    if (r.rows?.[0]?.app) return 'app';
-  } catch {}
-  return null;
-}
-
-
-/* =====================================================
-   Column type helpers (uuid/int/text)
-===================================================== */
-const __colTypeCache = new Map(); // key: schema.table.column
-
-async function getColType(tableName, columnName) {
-  const t = String(tableName || '').trim();
-  const c = String(columnName || '').trim();
-  if (!t || !c) return 'text';
-
-  const schema = await getTableSchema(t);
-  const cacheKey = `${schema || 'public'}.${t}.${c}`;
-  if (__colTypeCache.has(cacheKey)) return __colTypeCache.get(cacheKey);
-
-  try {
-    const q = await pool.query(
-      `
-      SELECT udt_name, data_type
-      FROM information_schema.columns
-      WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
-      LIMIT 1
-      `,
-      [schema || 'public', t, c]
-    );
-
-    const udt = String(q.rows?.[0]?.udt_name || '').toLowerCase();
-    const dt  = String(q.rows?.[0]?.data_type || '').toLowerCase();
-
-    let typ = 'text';
-    if (udt === 'uuid' || dt === 'uuid') typ = 'uuid';
-    else if (udt in { 'int4':1, 'integer':1 } || dt === 'integer') typ = 'int';
-    else if (udt in { 'int8':1, 'bigint':1 } || dt === 'bigint') typ = 'bigint';
-    else typ = 'text';
-
-    __colTypeCache.set(cacheKey, typ);
-    return typ;
-  } catch {
-    __colTypeCache.set(cacheKey, 'text');
-    return 'text';
-  }
-}
-
-function castParam(placeholder, typ) {
-  const t = String(typ || 'text');
-  if (t === 'uuid') return `(${placeholder})::uuid`;
-  if (t === 'int') return `(${placeholder})::int`;
-  if (t === 'bigint') return `(${placeholder})::bigint`;
-  return `(${placeholder})::text`;
-}
-
-async function castFor(tableName, columnName, placeholder) {
-  const t = await getColType(tableName, columnName);
-  return castParam(placeholder, t);
 }
 
 /* =====================================================
@@ -255,6 +176,7 @@ async function canAccessCase(caseId, user) {
   if (roleOf(user) === "manager") return true;
 
   const q = await pool.query(
+    // ✅ user_id قد يكون رقمي أو UUID
     `SELECT 1 FROM assignments WHERE case_id=$1 AND user_id::text=$2 LIMIT 1`,
     [Number(caseId), String(user.id)]
   );
@@ -333,9 +255,11 @@ app.post("/auth/login", async (req, res) => {
 
 app.get("/me", auth, async (req, res) => {
   try {
-    const q = await pool.query(`SELECT id, email, full_name, role FROM users WHERE id::text=$1`, [
-      String(req.user.id),
-    ]);
+    // ✅ يدعم id رقمي أو UUID
+    const q = await pool.query(
+      `SELECT id, email, full_name, role FROM users WHERE id::text=$1`,
+      [String(req.user.id)]
+    );
     if (!q.rowCount) return res.status(404).json({ error: "user_not_found" });
     return res.json(q.rows[0]);
   } catch (e) {
@@ -406,8 +330,8 @@ app.post("/auth/approve", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const userId = String(req.body?.userId || req.body?.id || req.body?.user_id || '').trim();
-    if (!userId) return res.status(400).json({ error: 'invalid_user_id' });
+    const userId = Number(req.body?.userId || req.body?.id || req.body?.user_id);
+    if (!userId) return res.status(400).json({ error: "invalid_user_id" });
 
     const activeCol = await getUsersActiveCol();
     if (!activeCol) return res.status(400).json({ error: "active_column_missing" });
@@ -415,7 +339,7 @@ app.post("/auth/approve", auth, async (req, res) => {
     const q = await pool.query(
       `
       UPDATE users SET ${activeCol}=true
-      WHERE id::text=$1
+      WHERE id=$1
       RETURNING id, full_name, email, role, ${activeCol} AS active
       `,
       [userId]
@@ -433,14 +357,14 @@ app.post("/auth/reject", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const userId = String((req.body && (req.body.userId ?? req.body.user_id ?? req.body.id)) || '').trim();
-    if (!userId) return res.status(400).json({ error: 'userId_required' });
+    const userId = Number((req.body && (req.body.userId ?? req.body.user_id ?? req.body.id)) || 0);
+    if (!userId) return res.status(400).json({ error: "userId_required" });
 
     const activeCol = await getUsersActiveCol();
     if (!activeCol) return res.status(400).json({ error: "active_column_missing" });
 
     const r = await client.query(
-      `UPDATE users SET ${activeCol}=false WHERE id::text=$1 AND role='staff' RETURNING id`,
+      `UPDATE users SET ${activeCol}=false WHERE id=$1 AND role='staff' RETURNING id`,
       [userId]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
@@ -482,15 +406,15 @@ app.patch("/employees/:id/active", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const id = String(req.params.id || '').trim();
+    const id = Number(req.params.id);
     const active = !!req.body?.active;
-    if (!id) return res.status(400).json({ error: 'invalid_id' });
+    if (!id) return res.status(400).json({ error: "invalid_id" });
 
     const activeCol = await getUsersActiveCol();
     if (!activeCol) return res.status(400).json({ error: "active_column_missing" });
 
     const q = await pool.query(
-      `UPDATE users SET ${activeCol}=$1 WHERE id::text=$2 RETURNING id, full_name, email, role, ${activeCol} AS active`,
+      `UPDATE users SET ${activeCol}=$1 WHERE id=$2 RETURNING id, full_name, email, role, ${activeCol} AS active`,
       [active, id]
     );
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
@@ -546,7 +470,7 @@ app.get("/cases", auth, async (req, res) => {
         a.assigned_at AS "assignedAt"
       FROM assignments a
       JOIN cases c ON c.id = a.case_id
-      WHERE a.user_id::text = $1
+      WHERE a.user_id = $1
       ORDER BY a.assigned_at DESC NULLS LAST, a.id DESC
       `,
       [String(req.user.id)]
@@ -707,13 +631,13 @@ app.post("/cases/:id/close", auth, async (req, res) => {
 
     try {
       const q = await pool.query(
-        `UPDATE cases SET status='closed', updated_at=NOW() WHERE id::text=$1 RETURNING *`,
+        `UPDATE cases SET status='closed', updated_at=NOW() WHERE id=$1 RETURNING *`,
         [caseId]
       );
       return res.json({ ok: true, case: q.rows[0] });
     } catch (e) {
       if (!isMissingColumn(e)) throw e;
-      const q2 = await pool.query(`UPDATE cases SET status='closed' WHERE id::text=$1 RETURNING *`, [
+      const q2 = await pool.query(`UPDATE cases SET status='closed' WHERE id=$1 RETURNING *`, [
         caseId,
       ]);
       return res.json({ ok: true, case: q2.rows[0] });
@@ -739,13 +663,13 @@ app.post("/cases/:id/reopen", auth, async (req, res) => {
 
     try {
       const q = await pool.query(
-        `UPDATE cases SET status='open', updated_at=NOW() WHERE id::text=$1 RETURNING *`,
+        `UPDATE cases SET status='open', updated_at=NOW() WHERE id=$1 RETURNING *`,
         [caseId]
       );
       return res.json({ ok: true, case: q.rows[0] });
     } catch (e) {
       if (!isMissingColumn(e)) throw e;
-      const q2 = await pool.query(`UPDATE cases SET status='open' WHERE id::text=$1 RETURNING *`, [caseId]);
+      const q2 = await pool.query(`UPDATE cases SET status='open' WHERE id=$1 RETURNING *`, [caseId]);
       return res.json({ ok: true, case: q2.rows[0] });
     }
   } catch (e) {
@@ -779,7 +703,7 @@ app.delete("/cases/:id", auth, async (req, res) => {
       }
     }
 
-    await client.query(`DELETE FROM cases WHERE id::text=$1`, [caseId]);
+    await client.query(`DELETE FROM cases WHERE id=$1`, [caseId]);
     await client.query("COMMIT");
     return res.status(204).send();
   } catch (e) {
@@ -801,28 +725,27 @@ app.post("/assign", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const body = req.body || {};
-    const caseKey = String(body.case_id ?? body.caseId ?? body.case ?? '').trim();
-    const userKey = String(body.user_id ?? body.userId ?? body.user ?? '').trim();
-    const note = body.note !== undefined ? body.note : null;
-
-    if (!caseKey || !userKey) return res.status(400).json({ error: "invalid_ids" });
-
-    // Resolve case numeric id by id::text or case_number
-    const caseRow = await client.query(
-      `SELECT id FROM cases WHERE id::text=$1 OR case_number=$1 LIMIT 1`,
-      [caseKey]
-    );
-    if (!caseRow.rowCount) return res.status(404).json({ error: "case_not_found" });
-    const caseId = Number(caseRow.rows[0].id);
+    const { case_id, user_id, note } = req.body || {};
+    const caseId = Number(case_id);
+    const userId = Number(user_id);
+    if (!caseId || !userId) return res.status(400).json({ error: "invalid_ids" });
 
     await client.query("BEGIN");
 
-    // Validate assignee
-    const activeCol = await getUsersActiveCol();
-    const uSql = `SELECT role${activeCol ? `, ${activeCol} AS active` : ", true AS active"} FROM users WHERE id::text=$1 LIMIT 1`;
-    const uRow = await client.query(uSql, [userKey]);
+    const caseExists = await client.query(`SELECT 1 FROM cases WHERE id=$1`, [caseId]);
+    if (caseExists.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "case_not_found" });
+    }
 
+    const activeCol = await getUsersActiveCol();
+    const uSql = `
+      SELECT role${activeCol ? `, ${activeCol} AS active` : ", true AS active"}
+      FROM users
+      WHERE id=$1
+      LIMIT 1
+    `;
+    const uRow = await client.query(uSql, [userId]);
     if (uRow.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "user_not_found" });
@@ -833,30 +756,26 @@ app.post("/assign", auth, async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "assignee_must_be_staff" });
     }
-
     if (!uRow.rows[0].active) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "assignee_not_active" });
     }
 
-    // One assignee per case (replace old)
     await client.query(`DELETE FROM assignments WHERE case_id=$1`, [caseId]);
-
-    const userIdCast = await castFor("assignments", "user_id", "$2");
-    const byCast = await castFor("assignments", "assigned_by", "$4");
-
-    const insertSql = `
+    await client.query(
+      `
       INSERT INTO assignments (case_id, user_id, note, assigned_by, assigned_at)
-      VALUES ($1, ${userIdCast}, $3, ${byCast}, NOW())
-    `;
-
-    await client.query(insertSql, [caseId, userKey, note ? String(note) : null, String(req.user.id)]);
+      VALUES ($1,$2,$3,$4,NOW())
+      `,
+      [caseId, userId, note || null, String(req.user.id)]
+    );
 
     try {
-      await client.query(
-        `INSERT INTO activity_log (case_id, who, what) VALUES ($1,$2,$3)`,
-        [caseId, String(req.user.id), `إسناد القضية للموظف #${userKey}`]
-      );
+      await client.query(`INSERT INTO activity_log (case_id, who, what) VALUES ($1,$2,$3)`, [
+        caseId,
+        String(req.user.id),
+        `إسناد القضية للموظف #${userId}`,
+      ]);
     } catch {}
 
     await client.query("COMMIT");
@@ -892,7 +811,7 @@ app.get("/my/cases", auth, async (req, res) => {
         a.assigned_at AS "assignedAt"
       FROM assignments a
       JOIN cases c ON c.id = a.case_id
-      WHERE a.user_id::text = $1
+      WHERE a.user_id = $1
       ORDER BY a.assigned_at DESC NULLS LAST, a.id DESC
       `,
       [String(req.user.id)]
@@ -1266,7 +1185,7 @@ app.delete("/cases/:cid/docs/:docId", auth, async (req, res) => {
     if (!ok) return res.status(403).json({ error: "forbidden" });
 
     try {
-      const q = await pool.query(`DELETE FROM case_documents WHERE id::text=$1 AND case_id=$2 RETURNING id`, [
+      const q = await pool.query(`DELETE FROM case_documents WHERE id=$1 AND case_id=$2 RETURNING id`, [
         docId,
         caseId,
       ]);
@@ -1355,7 +1274,7 @@ app.delete("/cases/:cid/notes/:noteId", auth, async (req, res) => {
     if (!ok) return res.status(403).json({ error: "forbidden" });
 
     try {
-      const q = await pool.query(`DELETE FROM case_notes WHERE id::text=$1 AND case_id=$2 RETURNING id`, [
+      const q = await pool.query(`DELETE FROM case_notes WHERE id=$1 AND case_id=$2 RETURNING id`, [
         noteId,
         caseId,
       ]);
@@ -1442,7 +1361,7 @@ app.post("/notifications/:id/read", auth, async (req, res) => {
     if (!id) return res.status(400).json({ error: "invalid_id" });
 
     try {
-      await pool.query(`UPDATE notifications SET read=true WHERE id::text=$1 AND user_id::text=$2`, [
+      await pool.query(`UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2`, [
         id,
         String(req.user.id),
       ]);
@@ -1641,7 +1560,7 @@ app.delete("/drafts/:id", auth, async (req, res) => {
     if (!mustBeManager(req, res)) return;
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "draft_id_required" });
-    const r = await client.query(`DELETE FROM drafts WHERE id::text=$1 RETURNING id`, [id]);
+    const r = await client.query(`DELETE FROM drafts WHERE id=$1 RETURNING id`, [id]);
     if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true });
   } catch (e) {
