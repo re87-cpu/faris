@@ -8,7 +8,7 @@ import pkg from "pg";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import { upload } from "./upload.js";
+import { upload } from "./upload.js"; // keep (حتى لو مو مستخدم هنا)
 
 const { Pool } = pkg;
 
@@ -29,7 +29,7 @@ const ORIGINS = (
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // أدوات بدون Origin
+      if (!origin) return cb(null, true); // curl/VScode/Server-to-server
       if (ORIGINS.includes(origin)) return cb(null, true);
       return cb(new Error("Not allowed by CORS"));
     },
@@ -63,11 +63,9 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// ✅ اجبار السيرفر يستخدم public schema دائمًا (يحسم app.users نهائيًا)
+// ✅ نخلي search_path يفضل public لكن ما يمنعنا نقرأ من app عند الحاجة
 pool.on("connect", (client) => {
-  client
-    .query("SET search_path TO public")
-    .catch(() => {}); // ما نوقف السيرفر لو فشل
+  client.query("SET search_path TO public, app").catch(() => {});
 });
 
 pool
@@ -90,7 +88,6 @@ pool
 ===================================================== */
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-faris";
 
-// ✅ توحيد role
 function roleOf(u) {
   return String(u?.role || "").trim().toLowerCase();
 }
@@ -112,19 +109,19 @@ function mustBeStaff(req, res) {
 }
 
 function isMissingTable(err) {
-  return err?.code === "42P01"; // undefined_table
+  return err?.code === "42P01";
 }
 
 function isMissingColumn(err) {
-  return err?.code === "42703"; // undefined_column
+  return err?.code === "42703";
 }
 
 /* =====================================================
-   🔥 Active Column Resolver
+   Active Column Resolver (public.users)
 ===================================================== */
 let __activeColCache = null;
 
-async function getActiveCol() {
+async function getActiveColPublic() {
   if (__activeColCache) return __activeColCache;
 
   try {
@@ -157,11 +154,115 @@ function auth(req, res, next) {
   if (!token) return res.status(401).json({ error: "no_token" });
 
   try {
-    req.user = jwt.verify(token, JWT_SECRET); // {id, role}
+    req.user = jwt.verify(token, JWT_SECRET); // {id, role, schema?}
     next();
   } catch {
     return res.status(401).json({ error: "invalid_or_expired" });
   }
+}
+
+/* =====================================================
+   Users helpers (try public then app)
+   - important: id is returned as TEXT always to avoid uuid/int issues
+===================================================== */
+async function findUserByEmail(emailNorm) {
+  // 1) public.users (might be int id)
+  try {
+    const activeCol = await getActiveColPublic();
+    const q = await pool.query(
+      `
+      SELECT
+        id::text AS id,
+        email,
+        full_name,
+        password_hash,
+        role,
+        ${activeCol} AS is_active,
+        'public'::text AS schema
+      FROM public.users
+      WHERE lower(email)=lower($1)
+      LIMIT 1
+      `,
+      [emailNorm]
+    );
+    if (q.rowCount) return q.rows[0];
+  } catch (e) {
+    console.log("DEBUG findUser public:", e.message);
+  }
+
+  // 2) app.users (uuid id)
+  try {
+    const q2 = await pool.query(
+      `
+      SELECT
+        id::text AS id,
+        email,
+        full_name,
+        password_hash,
+        role,
+        is_active AS is_active,
+        'app'::text AS schema
+      FROM app.users
+      WHERE lower(email)=lower($1)
+      LIMIT 1
+      `,
+      [emailNorm]
+    );
+    if (q2.rowCount) return q2.rows[0];
+  } catch (e) {
+    console.log("DEBUG findUser app:", e.message);
+  }
+
+  return null;
+}
+
+async function findUserByIdText(idText) {
+  // public first
+  try {
+    const activeCol = await getActiveColPublic();
+    const q = await pool.query(
+      `
+      SELECT
+        id::text AS id,
+        email,
+        full_name,
+        role,
+        ${activeCol} AS is_active,
+        'public'::text AS schema
+      FROM public.users
+      WHERE id::text=$1
+      LIMIT 1
+      `,
+      [idText]
+    );
+    if (q.rowCount) return q.rows[0];
+  } catch (e) {
+    // ignore
+  }
+
+  // app
+  try {
+    const q2 = await pool.query(
+      `
+      SELECT
+        id::text AS id,
+        email,
+        full_name,
+        role,
+        is_active AS is_active,
+        'app'::text AS schema
+      FROM app.users
+      WHERE id::text=$1
+      LIMIT 1
+      `,
+      [idText]
+    );
+    if (q2.rowCount) return q2.rows[0];
+  } catch (e) {
+    // ignore
+  }
+
+  return null;
 }
 
 /* =====================================================
@@ -184,16 +285,18 @@ async function canAccessCase(caseId, user) {
 app.get("/health", async (_, res) => {
   try {
     const q = await pool.query(
-      `SELECT current_database() AS db,
-              inet_server_addr() AS addr,
-              inet_server_port() AS port,
-              current_user AS usr,
-              current_setting('search_path') AS sp`
+      `
+      SELECT current_database() AS db,
+             inet_server_addr() AS addr,
+             inet_server_port() AS port,
+             current_user AS usr,
+             current_setting('search_path') AS sp
+      `
     );
 
     return res.json({
       ok: true,
-      version: "health-v3-2026-01-02",   // ✅ علامة واضحة
+      version: "health-v4-2026-01-02",
       pid: process.pid,
       file: __filename,
       db: q.rows[0],
@@ -201,14 +304,14 @@ app.get("/health", async (_, res) => {
   } catch (e) {
     return res.json({
       ok: false,
-      version: "health-v3-2026-01-02",
+      version: "health-v4-2026-01-02",
       error: e.message,
     });
   }
 });
 
 /* =====================================================
-   Auth (نسخة واحدة فقط ✅)
+   Auth
 ===================================================== */
 app.post("/auth/login", async (req, res) => {
   try {
@@ -220,49 +323,8 @@ app.post("/auth/login", async (req, res) => {
       return res.status(400).json({ error: "missing_credentials" });
     }
 
-    const found = await (async () => {
-      // public
-      try {
-        const activeCol = await getActiveCol("public");
-        const q = await pool.query(
-          `
-          SELECT id, password_hash, role, ${activeCol} AS is_active
-          FROM public.users
-          WHERE lower(email)=lower($1)
-          LIMIT 1
-          `,
-          [emailNorm]
-        );
-        if (q.rowCount) return { schema: "public", user: q.rows[0] };
-      } catch (e) {
-        console.log("DEBUG login public error:", e.message);
-      }
-
-      // app
-      try {
-        const activeCol = await getActiveCol("app");
-        const q = await pool.query(
-          `
-          SELECT id, password_hash, role, ${activeCol} AS is_active
-          FROM app.users
-          WHERE lower(email)=lower($1)
-          LIMIT 1
-          `,
-          [emailNorm]
-        );
-        if (q.rowCount) return { schema: "app", user: q.rows[0] };
-      } catch (e) {
-        console.log("DEBUG login app error:", e.message);
-      }
-
-      return null;
-    })();
-
-    if (!found?.user) {
-      return res.status(400).json({ error: "invalid_credentials" });
-    }
-
-    const user = found.user;
+    const user = await findUserByEmail(emailNorm);
+    if (!user) return res.status(400).json({ error: "invalid_credentials" });
 
     const isActive = (user.is_active ?? true) === true;
     if (!isActive) return res.status(403).json({ error: "inactive" });
@@ -272,38 +334,42 @@ app.post("/auth/login", async (req, res) => {
     if (!ok) return res.status(400).json({ error: "invalid_credentials" });
 
     const token = jwt.sign(
-      { id: String(user.id), role: String(user.role || "").trim().toLowerCase() },
+      { id: String(user.id), role: roleOf(user), schema: user.schema },
       JWT_SECRET,
       { expiresIn: "8h" }
     );
 
-    return res.json({ token, debug_schema: found.schema }); // ✅ نرجع schema مؤقتًا
+    return res.json({ token });
   } catch (e) {
-    console.error("POST /auth/login FULL ERROR:", e);
-    // ✅ مؤقتًا نرجّع سبب الخطأ عشان نصلحه بسرعة
-    return res.status(500).json({
-      error: "server_error",
-      debug: e?.message || String(e),
-    });
+    console.error("POST /auth/login:", e);
+    return res.status(500).json({ error: "server_error" });
   }
 });
 
 app.get("/me", auth, async (req, res) => {
   try {
-    const q = await pool.query(
-      "SELECT id, email, full_name, role FROM public.users WHERE id=$1",
-      [Number(req.user.id)]
-    );
-    if (!q.rowCount) return res.status(404).json({ error: "user_not_found" });
-    return res.json(q.rows[0]);
+    const idText = String(req.user?.id || "").trim();
+    if (!idText) return res.status(401).json({ error: "no_token" });
+
+    const me = await findUserByIdText(idText);
+    if (!me) return res.status(404).json({ error: "user_not_found" });
+
+    // ترجع id كنص دائمًا (يحمي من uuid/int)
+    return res.json({
+      id: me.id,
+      email: me.email,
+      full_name: me.full_name,
+      role: me.role,
+    });
   } catch (e) {
-    console.error("GET /me:", e.message);
+    console.error("GET /me:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
 /* =====================================================
    Auth Register (staff pending by default)
+   - يبقى على public.users مثل ما عندك
 ===================================================== */
 app.post("/auth/register", async (req, res) => {
   try {
@@ -322,20 +388,20 @@ app.post("/auth/register", async (req, res) => {
     if (exists.rowCount) return res.status(409).json({ error: "email_exists" });
 
     const password_hash = await bcrypt.hash(password, 10);
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const q = await pool.query(
       `
       INSERT INTO public.users (full_name, email, password_hash, role, ${activeCol}, created_at)
       VALUES ($1, $2, $3, 'staff', false, NOW())
-      RETURNING id, full_name, email, role, ${activeCol} AS is_active
+      RETURNING id::text AS id, full_name, email, role, ${activeCol} AS is_active
       `,
       [full_name, email, password_hash]
     );
 
     return res.status(201).json({ ok: true, user: q.rows[0] });
   } catch (e) {
-    console.error("POST /auth/register:", e.message);
+    console.error("POST /auth/register:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -347,11 +413,11 @@ app.get("/auth/pending", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const q = await pool.query(
       `
-      SELECT id, email, full_name, role, ${activeCol} AS is_active, created_at
+      SELECT id::text AS id, email, full_name, role, ${activeCol} AS is_active, created_at
       FROM public.users
       WHERE ${activeCol} = false
       ORDER BY created_at DESC NULLS LAST, id DESC
@@ -359,7 +425,7 @@ app.get("/auth/pending", auth, async (req, res) => {
     );
     return res.json(q.rows || []);
   } catch (e) {
-    console.error("GET /auth/pending:", e.message);
+    console.error("GET /auth/pending:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -371,24 +437,24 @@ app.post("/auth/approve", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const userId = Number(req.body?.userId || req.body?.id || req.body?.user_id);
+    const userId = String(req.body?.userId || req.body?.id || req.body?.user_id || "").trim();
     if (!userId) return res.status(400).json({ error: "invalid_user_id" });
 
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const q = await pool.query(
       `
       UPDATE public.users
       SET ${activeCol}=true
-      WHERE id=$1
-      RETURNING id, full_name, email, role, ${activeCol} AS is_active
+      WHERE id::text=$1
+      RETURNING id::text AS id, full_name, email, role, ${activeCol} AS is_active
       `,
       [userId]
     );
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true, user: q.rows[0] });
   } catch (e) {
-    console.error("POST /auth/approve:", e.message);
+    console.error("POST /auth/approve:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -401,20 +467,20 @@ app.post("/auth/reject", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const userId = Number((req.body && (req.body.userId ?? req.body.user_id)) || 0);
+    const userId = String((req.body && (req.body.userId ?? req.body.user_id)) || "").trim();
     if (!userId) return res.status(400).json({ error: "userId_required" });
 
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const r = await client.query(
-      `UPDATE public.users SET ${activeCol}=false WHERE id=$1 AND role='staff' RETURNING id`,
+      `UPDATE public.users SET ${activeCol}=false WHERE id::text=$1 AND role='staff' RETURNING id`,
       [userId]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
 
     return res.json({ ok: true });
   } catch (e) {
-    console.error("POST /auth/reject error:", e.message);
+    console.error("POST /auth/reject:", e);
     return res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
@@ -422,16 +488,16 @@ app.post("/auth/reject", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Employees (Manager)  ✅ تم تصحيح users schema
+   Employees (Manager)
 ===================================================== */
 app.get("/employees", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const q = await pool.query(`
-      SELECT id, full_name, email, role, ${activeCol} AS is_active
+      SELECT id::text AS id, full_name, email, role, ${activeCol} AS is_active
       FROM public.users
       WHERE role IN ('staff','manager')
       ORDER BY role DESC, id DESC
@@ -439,7 +505,7 @@ app.get("/employees", auth, async (req, res) => {
 
     return res.json(q.rows || []);
   } catch (e) {
-    console.error("GET /employees error:", e.message);
+    console.error("GET /employees:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -448,26 +514,31 @@ app.patch("/employees/:id/active", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const id = Number(req.params.id);
+    const idText = String(req.params.id || "").trim();
     const active = !!req.body?.active;
-    if (!id) return res.status(400).json({ error: "invalid_id" });
+    if (!idText) return res.status(400).json({ error: "invalid_id" });
 
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const q = await pool.query(
-      `UPDATE public.users SET ${activeCol}=$1 WHERE id=$2 RETURNING id, full_name, email, role, ${activeCol} AS is_active`,
-      [active, id]
+      `
+      UPDATE public.users
+      SET ${activeCol}=$1
+      WHERE id::text=$2
+      RETURNING id::text AS id, full_name, email, role, ${activeCol} AS is_active
+      `,
+      [active, idText]
     );
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true, user: q.rows[0] });
   } catch (e) {
-    console.error("PATCH /employees/:id/active error:", e.message);
+    console.error("PATCH /employees/:id/active:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
 /* =====================================================
-   Assign (manager) ✅ تم تصحيح users schema داخل التحقق
+   Assign (manager)
 ===================================================== */
 app.post("/assign", auth, async (req, res) => {
   const client = await pool.connect();
@@ -476,8 +547,8 @@ app.post("/assign", auth, async (req, res) => {
 
     const { case_id, user_id, note } = req.body || {};
     const caseId = Number(case_id);
-    const userId = Number(user_id);
-    if (!caseId || !userId) return res.status(400).json({ error: "invalid_ids" });
+    const userIdText = String(user_id || "").trim();
+    if (!caseId || !userIdText) return res.status(400).json({ error: "invalid_ids" });
 
     await client.query("BEGIN");
 
@@ -487,11 +558,11 @@ app.post("/assign", auth, async (req, res) => {
       return res.status(404).json({ error: "case_not_found" });
     }
 
-    const activeCol = await getActiveCol();
+    const activeCol = await getActiveColPublic();
 
     const uRow = await client.query(
-      `SELECT role, ${activeCol} AS is_active FROM public.users WHERE id=$1`,
-      [userId]
+      `SELECT role, ${activeCol} AS is_active FROM public.users WHERE id::text=$1`,
+      [userIdText]
     );
     if (uRow.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -510,6 +581,7 @@ app.post("/assign", auth, async (req, res) => {
       return res.status(400).json({ error: "assignee_not_active" });
     }
 
+    // ✅ مسؤول واحد لكل قضية
     await client.query(`DELETE FROM assignments WHERE case_id=$1`, [caseId]);
 
     await client.query(
@@ -517,40 +589,39 @@ app.post("/assign", auth, async (req, res) => {
       INSERT INTO assignments (case_id, user_id, note, assigned_by, assigned_at)
       VALUES ($1,$2,$3,$4,NOW())
       `,
-      [caseId, userId, note || null, Number(req.user.id)]
+      [caseId, Number(userIdText), note || null, Number(req.user.id)]
     );
 
     try {
       await client.query(
         `INSERT INTO activity_log (case_id, who, what) VALUES ($1,$2,$3)`,
-        [caseId, String(req.user.id), `إسناد القضية للموظف #${userId}`]
+        [caseId, String(req.user.id), `إسناد القضية للموظف #${userIdText}`]
       );
     } catch {}
 
     await client.query("COMMIT");
     return res.json({ ok: true });
   } catch (e) {
-    try { await client.query("ROLLBACK"); } catch {}
-    console.error("POST /assign error:", e.message);
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    console.error("POST /assign:", e);
     return res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
   }
 });
 
-// =====================================================
-// ✅ باقي Routes عندك (Cases / Sessions / Docs / Notes / ...)
-// اتركيها كما هي من ملفك الحالي — ما نحتاج نغيرها الآن
-// لأننا ثبتنا search_path = public وبالتالي FROM users يروح public تلقائيًا
-// =====================================================
+/* =====================================================
+   PUT OTHER ROUTES HERE (Cases / Sessions / Docs / Notes / ...)
+   - الصقي راوتس مشروعك هنا إذا كانت موجودة في نسخة أكبر
+===================================================== */
 
 /* =====================================================
    SPA fallback (frontend)
 ===================================================== */
 if (fs.existsSync(publicDir)) {
-  app.get("/", (req, res) => {
-    return res.sendFile(path.join(publicDir, "index.html"));
-  });
+  app.get("/", (req, res) => res.sendFile(path.join(publicDir, "index.html")));
 
   app.get("*", (req, res, next) => {
     if (
