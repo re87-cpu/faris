@@ -209,17 +209,26 @@ app.post("/auth/login", async (req, res) => {
       [email]
     );
 
-    if (!q.rowCount) return res.status(400).json({ error: "invalid_credentials" });
+    if (!q.rowCount) {
+      return res.status(400).json({ error: "invalid_credentials" });
+    }
 
-    // ✅ لو العمود موجود، نطبقه. لو null نخليه true
-    const isActive = (q.rows[0].is_active ?? true) === true;
-    if (!isActive) return res.status(403).json({ error: "inactive" });
+    const user = q.rows[0];
+    const isActive = (user.is_active ?? true) === true;
+    if (!isActive) {
+      return res.status(403).json({ error: "inactive" });
+    }
 
-    const ok = await bcrypt.compare(password, q.rows[0].password_hash);
-    if (!ok) return res.status(400).json({ error: "invalid_credentials" });
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(400).json({ error: "invalid_credentials" });
+    }
 
     const token = jwt.sign(
-      { id: q.rows[0].id, role: String(q.rows[0].role || "").trim().toLowerCase() },
+      {
+        id: user.id,
+        role: String(user.role || "").trim().toLowerCase(),
+      },
       JWT_SECRET,
       { expiresIn: "8h" }
     );
@@ -234,10 +243,83 @@ app.post("/auth/login", async (req, res) => {
 app.get("/me", auth, async (req, res) => {
   try {
     const q = await pool.query(
-      `SELECT id, email, full_name, role FROM users WHERE id=$1`,
+      "SELECT id, email, full_name, role FROM users WHERE id=$1",
       [Number(req.user.id)]
     );
-    if (!q.rowCount) return res.status(404).json({ error: "user_not_found" });
+    if (!q.rowCount) {
+      return res.status(404).json({ error: "user_not_found" });
+    }
+    return res.json(q.rows[0]);
+  } catch (e) {
+    console.error("GET /me:", e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+});/* =====================================================
+   Auth
+===================================================== */
+app.post("/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: "missing_credentials" });
+    }
+
+    const activeCol = await getActiveCol();
+
+    const q = await pool.query(
+      `
+      SELECT
+        id,
+        password_hash,
+        role,
+        ${activeCol} AS is_active
+      FROM users
+      WHERE lower(email) = lower($1)
+      LIMIT 1
+      `,
+      [email]
+    );
+
+    if (!q.rowCount) {
+      return res.status(400).json({ error: "invalid_credentials" });
+    }
+
+    const user = q.rows[0];
+    const isActive = (user.is_active ?? true) === true;
+    if (!isActive) {
+      return res.status(403).json({ error: "inactive" });
+    }
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.status(400).json({ error: "invalid_credentials" });
+    }
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        role: String(user.role || "").trim().toLowerCase(),
+      },
+      JWT_SECRET,
+      { expiresIn: "8h" }
+    );
+
+    return res.json({ token });
+  } catch (e) {
+    console.error("POST /auth/login:", e.message);
+    return res.status(500).json({ error: "server_error" });
+  }
+});
+
+app.get("/me", auth, async (req, res) => {
+  try {
+const q = await pool.query(
+  "SELECT id, email, full_name, role FROM users WHERE id=$1",
+  [Number(req.user.id)]
+);
+    if (!q.rowCount) {
+      return res.status(404).json({ error: "user_not_found" });
+    }
     return res.json(q.rows[0]);
   } catch (e) {
     console.error("GET /me:", e.message);
