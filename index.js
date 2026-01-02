@@ -29,11 +29,9 @@ const ORIGINS = (
 app.use(
   cors({
     origin: (origin, cb) => {
-      // أدوات مثل PowerShell/curl ما ترسل Origin
-      if (!origin) return cb(null, true);
+      if (!origin) return cb(null, true); // أدوات بدون Origin
       if (ORIGINS.includes(origin)) return cb(null, true);
-      // لا نرمي Error قوي يسبب 500 غامض — نخليها Forbidden واضحة
-      return cb(null, false);
+      return cb(new Error("Not allowed by CORS"));
     },
     credentials: true,
   })
@@ -65,9 +63,11 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// ✅ اجبار السيرفر يستخدم public أولاً (لكن ما يمنعنا نجرب app عند الحاجة)
+// ✅ اجبار السيرفر يستخدم public schema دائمًا (يحسم app.users نهائيًا)
 pool.on("connect", (client) => {
-  client.query("SET search_path TO public, app").catch(() => {});
+  client
+    .query("SET search_path TO public")
+    .catch(() => {}); // ما نوقف السيرفر لو فشل
 });
 
 pool
@@ -120,41 +120,32 @@ function isMissingColumn(err) {
 }
 
 /* =====================================================
-   🔥 Active Column Resolver (per schema)
+   🔥 Active Column Resolver
 ===================================================== */
-const __activeColCache = new Map();
+let __activeColCache = null;
 
-/**
- * يرجع اسم عمود التفعيل الموجود في schema محدد:
- * - public.users قد يحتوي active أو is_active
- * - app.users عندك يحتوي is_active
- */
-async function getActiveCol(schema = "public") {
-  const key = String(schema || "public");
-  if (__activeColCache.has(key)) return __activeColCache.get(key);
+async function getActiveCol() {
+  if (__activeColCache) return __activeColCache;
 
-  let col = "is_active"; // default safe
   try {
     const q = await pool.query(
       `
       SELECT column_name
       FROM information_schema.columns
-      WHERE table_schema=$1
+      WHERE table_schema='public'
         AND table_name='users'
         AND column_name IN ('is_active','active')
-      `,
-      [key]
+      `
     );
-
     const cols = (q.rows || []).map((r) => String(r.column_name));
-    if (cols.includes("is_active")) col = "is_active";
-    else if (cols.includes("active")) col = "active";
+    if (cols.includes("is_active")) __activeColCache = "is_active";
+    else if (cols.includes("active")) __activeColCache = "active";
+    else __activeColCache = "is_active";
   } catch {
-    // ignore
+    __activeColCache = "is_active";
   }
 
-  __activeColCache.set(key, col);
-  return col;
+  return __activeColCache;
 }
 
 /* =====================================================
@@ -193,96 +184,27 @@ async function canAccessCase(caseId, user) {
 app.get("/health", async (_, res) => {
   try {
     const q = await pool.query(
-      `SELECT current_database() AS db, inet_server_addr() AS addr, inet_server_port() AS port, current_user AS usr, current_setting('search_path') AS sp`
+      `SELECT current_database() AS db, inet_server_addr() AS addr, inet_server_port() AS port, current_user AS usr`
     );
-    const activePublic = await getActiveCol("public");
-    const activeApp = await getActiveCol("app");
+    const activeCol = await getActiveCol();
     return res.json({
       ok: true,
       pid: process.pid,
       file: __filename,
-      active: { public: activePublic, app: activeApp },
+      activeCol,
       db: q.rows[0],
     });
   } catch (e) {
+    const activeCol = await getActiveCol().catch(() => "unknown");
     return res.json({
       ok: true,
       pid: process.pid,
       file: __filename,
+      activeCol,
       db_error: e.message,
     });
   }
 });
-
-/* =====================================================
-   Auth helpers (find user in public then app)
-===================================================== */
-async function findUserByEmail(emailNorm) {
-  // 1) public
-  try {
-    const activeCol = await getActiveCol("public");
-    const q = await pool.query(
-      `
-      SELECT id, password_hash, role, ${activeCol} AS is_active
-      FROM public.users
-      WHERE lower(email)=lower($1)
-      LIMIT 1
-      `,
-      [emailNorm]
-    );
-    if (q.rowCount) return { schema: "public", user: q.rows[0] };
-  } catch (e) {
-    // لو public.users فيها مشكلة، نكمل نجرب app
-    if (!isMissingTable(e) && !isMissingColumn(e)) throw e;
-  }
-
-  // 2) app
-  try {
-    const activeCol = await getActiveCol("app");
-    const q = await pool.query(
-      `
-      SELECT id, password_hash, role, ${activeCol} AS is_active
-      FROM app.users
-      WHERE lower(email)=lower($1)
-      LIMIT 1
-      `,
-      [emailNorm]
-    );
-    if (q.rowCount) return { schema: "app", user: q.rows[0] };
-  } catch (e) {
-    if (!isMissingTable(e) && !isMissingColumn(e)) throw e;
-  }
-
-  return null;
-}
-
-async function findMeById(id) {
-  const idStr = String(id ?? "").trim();
-  if (!idStr) return null;
-
-  // نجرب public ثم app (يدعم int/uuid لأننا نقارن id::text)
-  try {
-    const q = await pool.query(
-      `SELECT id, email, full_name, role FROM public.users WHERE id::text=$1 LIMIT 1`,
-      [idStr]
-    );
-    if (q.rowCount) return q.rows[0];
-  } catch (e) {
-    if (!isMissingTable(e) && !isMissingColumn(e)) throw e;
-  }
-
-  try {
-    const q = await pool.query(
-      `SELECT id, email, full_name, role FROM app.users WHERE id::text=$1 LIMIT 1`,
-      [idStr]
-    );
-    if (q.rowCount) return q.rows[0];
-  } catch (e) {
-    if (!isMissingTable(e) && !isMissingColumn(e)) throw e;
-  }
-
-  return null;
-}
 
 /* =====================================================
    Auth (نسخة واحدة فقط ✅)
@@ -297,8 +219,47 @@ app.post("/auth/login", async (req, res) => {
       return res.status(400).json({ error: "missing_credentials" });
     }
 
-    const found = await findUserByEmail(emailNorm);
-    if (!found?.user) return res.status(400).json({ error: "invalid_credentials" });
+    const found = await (async () => {
+      // public
+      try {
+        const activeCol = await getActiveCol("public");
+        const q = await pool.query(
+          `
+          SELECT id, password_hash, role, ${activeCol} AS is_active
+          FROM public.users
+          WHERE lower(email)=lower($1)
+          LIMIT 1
+          `,
+          [emailNorm]
+        );
+        if (q.rowCount) return { schema: "public", user: q.rows[0] };
+      } catch (e) {
+        console.log("DEBUG login public error:", e.message);
+      }
+
+      // app
+      try {
+        const activeCol = await getActiveCol("app");
+        const q = await pool.query(
+          `
+          SELECT id, password_hash, role, ${activeCol} AS is_active
+          FROM app.users
+          WHERE lower(email)=lower($1)
+          LIMIT 1
+          `,
+          [emailNorm]
+        );
+        if (q.rowCount) return { schema: "app", user: q.rows[0] };
+      } catch (e) {
+        console.log("DEBUG login app error:", e.message);
+      }
+
+      return null;
+    })();
+
+    if (!found?.user) {
+      return res.status(400).json({ error: "invalid_credentials" });
+    }
 
     const user = found.user;
 
@@ -309,25 +270,31 @@ app.post("/auth/login", async (req, res) => {
     const ok = await bcrypt.compare(passNorm, hash);
     if (!ok) return res.status(400).json({ error: "invalid_credentials" });
 
-    // ✅ نخزن id كـ string (يدعم int/uuid)
     const token = jwt.sign(
       { id: String(user.id), role: String(user.role || "").trim().toLowerCase() },
       JWT_SECRET,
       { expiresIn: "8h" }
     );
 
-    return res.json({ token });
+    return res.json({ token, debug_schema: found.schema }); // ✅ نرجع schema مؤقتًا
   } catch (e) {
-    console.error("POST /auth/login:", e.message);
-    return res.status(500).json({ error: "server_error" });
+    console.error("POST /auth/login FULL ERROR:", e);
+    // ✅ مؤقتًا نرجّع سبب الخطأ عشان نصلحه بسرعة
+    return res.status(500).json({
+      error: "server_error",
+      debug: e?.message || String(e),
+    });
   }
 });
 
 app.get("/me", auth, async (req, res) => {
   try {
-    const me = await findMeById(req.user?.id);
-    if (!me) return res.status(404).json({ error: "user_not_found" });
-    return res.json(me);
+    const q = await pool.query(
+      "SELECT id, email, full_name, role FROM public.users WHERE id=$1",
+      [Number(req.user.id)]
+    );
+    if (!q.rowCount) return res.status(404).json({ error: "user_not_found" });
+    return res.json(q.rows[0]);
   } catch (e) {
     console.error("GET /me:", e.message);
     return res.status(500).json({ error: "server_error" });
@@ -335,7 +302,7 @@ app.get("/me", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Auth Register (staff pending by default) -> public.users
+   Auth Register (staff pending by default)
 ===================================================== */
 app.post("/auth/register", async (req, res) => {
   try {
@@ -354,7 +321,7 @@ app.post("/auth/register", async (req, res) => {
     if (exists.rowCount) return res.status(409).json({ error: "email_exists" });
 
     const password_hash = await bcrypt.hash(password, 10);
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const q = await pool.query(
       `
@@ -373,20 +340,20 @@ app.post("/auth/register", async (req, res) => {
 });
 
 /* =====================================================
-   Auth Pending (manager) -> public.users
+   Auth Pending (manager)
 ===================================================== */
 app.get("/auth/pending", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const q = await pool.query(
       `
       SELECT id, email, full_name, role, ${activeCol} AS is_active, created_at
       FROM public.users
       WHERE ${activeCol} = false
-      ORDER BY created_at DESC NULLS LAST
+      ORDER BY created_at DESC NULLS LAST, id DESC
       `
     );
     return res.json(q.rows || []);
@@ -397,26 +364,25 @@ app.get("/auth/pending", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Auth Approve (manager) -> public.users
+   Auth Approve (manager)
 ===================================================== */
 app.post("/auth/approve", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const userId = req.body?.userId || req.body?.id || req.body?.user_id;
-    const idStr = String(userId || "").trim();
-    if (!idStr) return res.status(400).json({ error: "invalid_user_id" });
+    const userId = Number(req.body?.userId || req.body?.id || req.body?.user_id);
+    if (!userId) return res.status(400).json({ error: "invalid_user_id" });
 
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const q = await pool.query(
       `
       UPDATE public.users
       SET ${activeCol}=true
-      WHERE id::text=$1
+      WHERE id=$1
       RETURNING id, full_name, email, role, ${activeCol} AS is_active
       `,
-      [idStr]
+      [userId]
     );
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true, user: q.rows[0] });
@@ -427,22 +393,21 @@ app.post("/auth/approve", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Auth Reject (manager) -> public.users
+   Auth Reject (manager)
 ===================================================== */
 app.post("/auth/reject", auth, async (req, res) => {
   const client = await pool.connect();
   try {
     if (!mustBeManager(req, res)) return;
 
-    const userId = req.body?.userId ?? req.body?.user_id ?? req.body?.id;
-    const idStr = String(userId || "").trim();
-    if (!idStr) return res.status(400).json({ error: "userId_required" });
+    const userId = Number((req.body && (req.body.userId ?? req.body.user_id)) || 0);
+    if (!userId) return res.status(400).json({ error: "userId_required" });
 
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const r = await client.query(
-      `UPDATE public.users SET ${activeCol}=false WHERE id::text=$1 AND role='staff' RETURNING id`,
-      [idStr]
+      `UPDATE public.users SET ${activeCol}=false WHERE id=$1 AND role='staff' RETURNING id`,
+      [userId]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
 
@@ -456,19 +421,19 @@ app.post("/auth/reject", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Employees (Manager) -> public.users
+   Employees (Manager)  ✅ تم تصحيح users schema
 ===================================================== */
 app.get("/employees", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const q = await pool.query(`
       SELECT id, full_name, email, role, ${activeCol} AS is_active
       FROM public.users
       WHERE role IN ('staff','manager')
-      ORDER BY role DESC
+      ORDER BY role DESC, id DESC
     `);
 
     return res.json(q.rows || []);
@@ -482,15 +447,15 @@ app.patch("/employees/:id/active", auth, async (req, res) => {
   try {
     if (!mustBeManager(req, res)) return;
 
-    const idStr = String(req.params.id || "").trim();
+    const id = Number(req.params.id);
     const active = !!req.body?.active;
-    if (!idStr) return res.status(400).json({ error: "invalid_id" });
+    if (!id) return res.status(400).json({ error: "invalid_id" });
 
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const q = await pool.query(
-      `UPDATE public.users SET ${activeCol}=$1 WHERE id::text=$2 RETURNING id, full_name, email, role, ${activeCol} AS is_active`,
-      [active, idStr]
+      `UPDATE public.users SET ${activeCol}=$1 WHERE id=$2 RETURNING id, full_name, email, role, ${activeCol} AS is_active`,
+      [active, id]
     );
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true, user: q.rows[0] });
@@ -501,7 +466,7 @@ app.patch("/employees/:id/active", auth, async (req, res) => {
 });
 
 /* =====================================================
-   Assign (manager)
+   Assign (manager) ✅ تم تصحيح users schema داخل التحقق
 ===================================================== */
 app.post("/assign", auth, async (req, res) => {
   const client = await pool.connect();
@@ -521,7 +486,7 @@ app.post("/assign", auth, async (req, res) => {
       return res.status(404).json({ error: "case_not_found" });
     }
 
-    const activeCol = await getActiveCol("public");
+    const activeCol = await getActiveCol();
 
     const uRow = await client.query(
       `SELECT role, ${activeCol} AS is_active FROM public.users WHERE id=$1`,
@@ -551,7 +516,7 @@ app.post("/assign", auth, async (req, res) => {
       INSERT INTO assignments (case_id, user_id, note, assigned_by, assigned_at)
       VALUES ($1,$2,$3,$4,NOW())
       `,
-      [caseId, userId, note || null, String(req.user.id)]
+      [caseId, userId, note || null, Number(req.user.id)]
     );
 
     try {
@@ -571,6 +536,12 @@ app.post("/assign", auth, async (req, res) => {
     client.release();
   }
 });
+
+// =====================================================
+// ✅ باقي Routes عندك (Cases / Sessions / Docs / Notes / ...)
+// اتركيها كما هي من ملفك الحالي — ما نحتاج نغيرها الآن
+// لأننا ثبتنا search_path = public وبالتالي FROM users يروح public تلقائيًا
+// =====================================================
 
 /* =====================================================
    SPA fallback (frontend)
