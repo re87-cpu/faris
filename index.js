@@ -184,24 +184,25 @@ async function canAccessCase(caseId, user) {
 app.get("/health", async (_, res) => {
   try {
     const q = await pool.query(
-      `SELECT current_database() AS db, inet_server_addr() AS addr, inet_server_port() AS port, current_user AS usr`
+      `SELECT current_database() AS db,
+              inet_server_addr() AS addr,
+              inet_server_port() AS port,
+              current_user AS usr,
+              current_setting('search_path') AS sp`
     );
-    const activeCol = await getActiveCol();
+
     return res.json({
       ok: true,
+      version: "health-v3-2026-01-02",   // ✅ علامة واضحة
       pid: process.pid,
       file: __filename,
-      activeCol,
       db: q.rows[0],
     });
   } catch (e) {
-    const activeCol = await getActiveCol().catch(() => "unknown");
     return res.json({
-      ok: true,
-      pid: process.pid,
-      file: __filename,
-      activeCol,
-      db_error: e.message,
+      ok: false,
+      version: "health-v3-2026-01-02",
+      error: e.message,
     });
   }
 });
