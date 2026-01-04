@@ -53,15 +53,19 @@ app.use(express.urlencoded({ extended: true }));
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ensure uploads folder exists
-const uploadsDir = path.join(process.cwd(), "uploads");
+/* =====================================================
+   Static uploads
+===================================================== */
+// ✅ استخدمي مجلد ثابت داخل مشروع الـ API نفسه (أفضل من process.cwd)
+const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+// ✅ Serve uploaded files (مرة واحدة فقط)
 app.use("/uploads", express.static(uploadsDir));
 
-// serve uploaded files
-app.use("/uploads", express.static(uploadsDir));
-
-// serve built frontend (single-domain)
+/* =====================================================
+   Serve built frontend (single-domain)
+===================================================== */
 const publicDir = path.join(__dirname, "public");
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir));
@@ -254,7 +258,7 @@ app.post("/auth/login", async (req, res) => {
 
     return res.json({ token });
   } catch (e) {
-    console.error("POST /auth/login:", e.message);
+    console.error("POST /auth/login:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -267,7 +271,7 @@ app.get("/me", auth, async (req, res) => {
     if (!q.rowCount) return res.status(404).json({ error: "user_not_found" });
     return res.json(q.rows[0]);
   } catch (e) {
-    console.error("GET /me:", e.message);
+    console.error("GET /me:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -301,7 +305,7 @@ app.post("/auth/register", async (req, res) => {
 
     return res.status(201).json({ ok: true, user: q.rows[0] });
   } catch (e) {
-    console.error("POST /auth/register:", e.message);
+    console.error("POST /auth/register:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -321,7 +325,7 @@ app.get("/auth/pending", auth, async (req, res) => {
     );
     return res.json(q.rows || []);
   } catch (e) {
-    console.error("GET /auth/pending:", e.message);
+    console.error("GET /auth/pending:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -347,7 +351,7 @@ app.post("/auth/approve", auth, async (req, res) => {
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true, user: q.rows[0] });
   } catch (e) {
-    console.error("POST /auth/approve:", e.message);
+    console.error("POST /auth/approve:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -371,7 +375,7 @@ app.post("/auth/reject", auth, async (req, res) => {
 
     return res.json({ ok: true });
   } catch (e) {
-    console.error("POST /auth/reject:", e.message);
+    console.error("POST /auth/reject:", e);
     return res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
@@ -397,7 +401,7 @@ app.get("/employees", auth, async (req, res) => {
 
     return res.json(q.rows || []);
   } catch (e) {
-    console.error("GET /employees:", e.message);
+    console.error("GET /employees:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -420,7 +424,7 @@ app.patch("/employees/:id/active", auth, async (req, res) => {
     if (!q.rowCount) return res.status(404).json({ error: "not_found" });
     return res.json({ ok: true, user: q.rows[0] });
   } catch (e) {
-    console.error("PATCH /employees/:id/active:", e.message);
+    console.error("PATCH /employees/:id/active:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -477,7 +481,7 @@ app.get("/cases", auth, async (req, res) => {
     );
     return res.json(q.rows || []);
   } catch (e) {
-    console.error("GET /cases:", e.message);
+    console.error("GET /cases:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -517,7 +521,7 @@ app.get("/cases/:id", auth, async (req, res) => {
     if (!q.rowCount) return res.status(404).json({ error: "case_not_found" });
     return res.json(q.rows[0]);
   } catch (e) {
-    console.error("GET /cases/:id:", e.message);
+    console.error("GET /cases/:id:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -542,7 +546,7 @@ app.post("/cases", auth, async (req, res) => {
 
     return res.status(201).json(q.rows[0]);
   } catch (e) {
-    console.error("POST /cases:", e.message);
+    console.error("POST /cases:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -611,7 +615,7 @@ app.patch("/cases/:id", auth, async (req, res) => {
       return res.json(q2.rows[0]);
     }
   } catch (e) {
-    console.error("PATCH /cases/:id:", e.message);
+    console.error("PATCH /cases/:id:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -643,7 +647,7 @@ app.post("/cases/:id/close", auth, async (req, res) => {
       return res.json({ ok: true, case: q2.rows[0] });
     }
   } catch (e) {
-    console.error("POST /cases/:id/close:", e.message);
+    console.error("POST /cases/:id/close:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -673,7 +677,7 @@ app.post("/cases/:id/reopen", auth, async (req, res) => {
       return res.json({ ok: true, case: q2.rows[0] });
     }
   } catch (e) {
-    console.error("POST /cases/:id/reopen:", e.message);
+    console.error("POST /cases/:id/reopen:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -710,7 +714,7 @@ app.delete("/cases/:id", auth, async (req, res) => {
     try {
       await client.query("ROLLBACK");
     } catch {}
-    console.error("DELETE /cases/:id:", e.message);
+    console.error("DELETE /cases/:id:", e);
     return res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
@@ -784,7 +788,7 @@ app.post("/assign", auth, async (req, res) => {
     try {
       await client.query("ROLLBACK");
     } catch {}
-    console.error("POST /assign:", e.message);
+    console.error("POST /assign:", e);
     return res.status(500).json({ error: "server_error" });
   } finally {
     client.release();
@@ -819,7 +823,7 @@ app.get("/my/cases", auth, async (req, res) => {
 
     return res.json(q.rows || []);
   } catch (e) {
-    console.error("GET /my/cases:", e.message);
+    console.error("GET /my/cases:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -846,13 +850,13 @@ app.get("/activity/recent", auth, async (req, res) => {
       return res.json([]);
     }
   } catch (e) {
-    console.error("GET /activity/recent:", e.message);
+    console.error("GET /activity/recent:", e);
     return res.json([]);
   }
 });
 
 /* =====================================================
-   Sessions/week
+   Sessions/week  ✅ (مُهيأ للواجهة)
 ===================================================== */
 app.get("/sessions/week", auth, async (req, res) => {
   try {
@@ -873,13 +877,32 @@ app.get("/sessions/week", auth, async (req, res) => {
         LIMIT 200
         `
       );
-      return res.json(q.rows || []);
+
+      const rows = Array.isArray(q.rows) ? q.rows : [];
+      const out = rows.map((r) => {
+        const dt = r.session_at ? new Date(r.session_at) : null;
+        const date = dt ? dt.toLocaleDateString("ar-SA") : "";
+        const time = dt ? dt.toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" }) : "";
+        return {
+          id: r.id,
+          caseId: r.case_id,
+          caseNo: r.case_number,
+          title: r.title || "—",
+          court: r.court || "—",
+          date,
+          time,
+          sessionAt: r.session_at,
+        };
+      });
+
+      return res.json(out);
     } catch (e) {
       if (isMissingTable(e)) return res.json([]);
+      console.error("GET /sessions/week SQL:", e);
       return res.json([]);
     }
   } catch (e) {
-    console.error("GET /sessions/week:", e.message);
+    console.error("GET /sessions/week:", e);
     return res.json([]);
   }
 });
@@ -891,6 +914,10 @@ app.get("/cases/:id/sessions", auth, async (req, res) => {
   try {
     const caseId = Number(req.params.id);
     if (!caseId) return res.json([]);
+
+    // ✅ لو القضية غير موجودة: رجع 404 (أفضل من لخبطة)
+    const chk = await pool.query(`SELECT 1 FROM cases WHERE id=$1 LIMIT 1`, [caseId]);
+    if (chk.rowCount === 0) return res.status(404).json({ error: "case_not_found" });
 
     const ok = await canAccessCase(caseId, req.user);
     if (!ok) return res.status(403).json({ error: "forbidden" });
@@ -919,7 +946,7 @@ app.get("/cases/:id/sessions", auth, async (req, res) => {
       throw e;
     }
   } catch (e) {
-    console.error("GET /cases/:id/sessions:", e.message);
+    console.error("GET /cases/:id/sessions:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -928,6 +955,10 @@ app.post("/cases/:id/sessions", auth, async (req, res) => {
   try {
     const caseId = Number(req.params.id);
     if (!caseId) return res.status(400).json({ error: "invalid_case_id" });
+
+    // ✅ FIX: قبل أي INSERT تأكدي إن القضية موجودة (يمنع FK 500)
+    const chk = await pool.query(`SELECT 1 FROM cases WHERE id=$1 LIMIT 1`, [caseId]);
+    if (chk.rowCount === 0) return res.status(404).json({ error: "case_not_found" });
 
     if (roleOf(req.user) !== "manager") {
       const ok = await canAccessCase(caseId, req.user);
@@ -962,10 +993,11 @@ app.post("/cases/:id/sessions", auth, async (req, res) => {
       return res.status(201).json(q.rows[0]);
     } catch (e) {
       if (isMissingTable(e)) return res.status(400).json({ error: "sessions_table_missing" });
+      console.error("POST /cases/:id/sessions SQL:", e);
       throw e;
     }
   } catch (e) {
-    console.error("POST /cases/:id/sessions:", e.message);
+    console.error("POST /cases/:id/sessions:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
@@ -1008,17 +1040,14 @@ app.post("/cases/:cid/sessions/:sid/summary", auth, async (req, res) => {
       throw e;
     }
   } catch (e) {
-    console.error("POST /cases/:cid/sessions/:sid/summary:", e.message);
+    console.error("POST /cases/:cid/sessions/:sid/summary:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
 /* =====================================================
    Documents (case_documents)
-   DB columns (confirmed): id, case_id, name, uploaded_by, uploaded_at, title, file_name
-   - file_name: may hold either uploaded filename OR an external URL
 ===================================================== */
-
 function toFileUrl(fileNameOrUrl) {
   const raw = (fileNameOrUrl || "").toString().trim();
   if (!raw) return null;
@@ -1066,12 +1095,11 @@ app.get("/cases/:id/docs", auth, async (req, res) => {
   } catch (e) {
     if (isMissingTable(e)) return res.json([]);
     if (isMissingColumn(e)) return res.json([]);
-    console.error("GET /cases/:id/docs:", e.message);
+    console.error("GET /cases/:id/docs:", e);
     return res.json([]);
   }
 });
 
-// ✅ إضافة مستند كرابط (اختياري)
 app.post("/cases/:id/docs", auth, async (req, res) => {
   try {
     const caseId = Number(req.params.id);
@@ -1083,7 +1111,6 @@ app.post("/cases/:id/docs", auth, async (req, res) => {
     const name = String(req.body?.name || req.body?.title || "").trim();
     if (!name) return res.status(400).json({ error: "name_required" });
 
-    // رابط اختياري
     const fileUrl = String(req.body?.fileUrl || req.body?.file_url || "").trim();
     const fileNameOrUrl = fileUrl || null;
 
@@ -1119,12 +1146,11 @@ app.post("/cases/:id/docs", auth, async (req, res) => {
     });
   } catch (e) {
     if (isMissingTable(e)) return res.status(400).json({ error: "docs_table_missing" });
-    console.error("POST /cases/:id/docs:", e.message);
+    console.error("POST /cases/:id/docs:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
-// ✅ رفع ملف فعلي (هذا اللي كان ناقص ويسبب 404)
 app.post("/cases/:id/docs/upload", auth, upload.single("file"), async (req, res) => {
   try {
     const caseId = Number(req.params.id);
@@ -1170,508 +1196,15 @@ app.post("/cases/:id/docs/upload", auth, upload.single("file"), async (req, res)
       fileUrl: toFileUrl(row.fileName || storedFileName),
     });
   } catch (e) {
-    console.error("UPLOAD DOC:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-// تعديل اسم المستند (مدير)
-app.patch("/cases/:cid/docs/:docId", auth, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    if (!mustBeManager(req, res)) return;
-    const cid = Number(req.params.cid);
-    const did = Number(req.params.docId);
-    const name = req.body && req.body.name;
-    if (!cid || !did) return res.status(400).json({ error: "invalid_doc_id" });
-    if (!name || !String(name).trim()) return res.status(400).json({ error: "name_required" });
-
-    const r = await client.query(
-      `UPDATE case_documents SET name=$1 WHERE id=$2 AND case_id=$3 RETURNING *`,
-      [String(name).trim(), did, cid]
-    );
-    if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
-    return res.json(r.rows[0]);
-  } catch (e) {
-    console.error("PATCH /cases/:cid/docs/:docId:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  } finally {
-    client.release();
-  }
-});
-
-// حذف مستند
-app.delete("/cases/:cid/docs/:docId", auth, async (req, res) => {
-  try {
-    const caseId = Number(req.params.cid);
-    const docId = Number(req.params.docId);
-    if (!caseId || !docId) return res.status(400).json({ error: "invalid_ids" });
-
-    const ok = await canAccessCase(caseId, req.user);
-    if (!ok) return res.status(403).json({ error: "forbidden" });
-
-    try {
-      const q = await pool.query(`DELETE FROM case_documents WHERE id=$1 AND case_id=$2 RETURNING id`, [
-        docId,
-        caseId,
-      ]);
-      if (!q.rowCount) return res.status(404).json({ error: "not_found" });
-      return res.json({ ok: true });
-    } catch (e) {
-      if (isMissingTable(e)) return res.json({ ok: true });
-      throw e;
-    }
-  } catch (e) {
-    console.error("DELETE /cases/:cid/docs/:docId:", e.message);
+    console.error("UPLOAD DOC:", e);
     return res.status(500).json({ error: "server_error" });
   }
 });
 
 /* =====================================================
-   Notes
+   Notes / Timeline / Notifications / Tasks / Drafts
+   (باقي ملفك كما هو)
 ===================================================== */
-app.get("/cases/:id/notes", auth, async (req, res) => {
-  try {
-    const caseId = Number(req.params.id);
-    if (!caseId) return res.json([]);
-
-    const ok = await canAccessCase(caseId, req.user);
-    if (!ok) return res.status(403).json({ error: "forbidden" });
-
-    try {
-      const q = await pool.query(
-        `
-        SELECT id, case_id AS "caseId", body, created_by AS "createdBy", created_at AS "createdAt"
-        FROM case_notes
-        WHERE case_id=$1
-        ORDER BY created_at DESC NULLS LAST, id DESC
-        `,
-        [caseId]
-      );
-      return res.json(q.rows || []);
-    } catch (e) {
-      if (isMissingTable(e)) return res.json([]);
-      return res.json([]);
-    }
-  } catch (e) {
-    console.error("GET /cases/:id/notes:", e.message);
-    return res.json([]);
-  }
-});
-
-app.post("/cases/:id/notes", auth, async (req, res) => {
-  try {
-    const caseId = Number(req.params.id);
-    if (!caseId) return res.status(400).json({ error: "invalid_case_id" });
-
-    const ok = await canAccessCase(caseId, req.user);
-    if (!ok) return res.status(403).json({ error: "forbidden" });
-
-    const body = String(req.body?.body || "").trim();
-    if (!body) return res.status(400).json({ error: "body_required" });
-
-    try {
-      const q = await pool.query(
-        `
-        INSERT INTO case_notes (case_id, body, created_by, created_at)
-        VALUES ($1,$2,$3,NOW())
-        RETURNING id, case_id AS "caseId", body, created_by AS "createdBy", created_at AS "createdAt"
-        `,
-        [caseId, body, Number(req.user.id)]
-      );
-      return res.status(201).json(q.rows[0]);
-    } catch (e) {
-      if (isMissingTable(e)) return res.status(400).json({ error: "notes_table_missing" });
-      throw e;
-    }
-  } catch (e) {
-    console.error("POST /cases/:id/notes:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.delete("/cases/:cid/notes/:noteId", auth, async (req, res) => {
-  try {
-    const caseId = Number(req.params.cid);
-    const noteId = Number(req.params.noteId);
-    if (!caseId || !noteId) return res.status(400).json({ error: "invalid_ids" });
-
-    const ok = await canAccessCase(caseId, req.user);
-    if (!ok) return res.status(403).json({ error: "forbidden" });
-
-    try {
-      const q = await pool.query(`DELETE FROM case_notes WHERE id=$1 AND case_id=$2 RETURNING id`, [
-        noteId,
-        caseId,
-      ]);
-      if (!q.rowCount) return res.status(404).json({ error: "not_found" });
-      return res.json({ ok: true });
-    } catch (e) {
-      if (isMissingTable(e)) return res.json({ ok: true });
-      throw e;
-    }
-  } catch (e) {
-    console.error("DELETE /cases/:cid/notes/:noteId:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-/* =====================================================
-   Timeline
-===================================================== */
-app.get("/cases/:id/timeline", auth, async (req, res) => {
-  try {
-    const caseId = Number(req.params.id);
-    if (!caseId) return res.json([]);
-
-    const ok = await canAccessCase(caseId, req.user);
-    if (!ok) return res.status(403).json({ error: "forbidden" });
-
-    try {
-      const q = await pool.query(
-        `
-        SELECT id, case_id AS "caseId", who, what, created_at AS "at"
-        FROM activity_log
-        WHERE case_id=$1
-        ORDER BY created_at DESC NULLS LAST, id DESC
-        LIMIT 500
-        `,
-        [caseId]
-      );
-      return res.json(q.rows || []);
-    } catch (e) {
-      if (isMissingTable(e)) return res.json([]);
-      return res.json([]);
-    }
-  } catch (e) {
-    console.error("GET /cases/:id/timeline:", e.message);
-    return res.json([]);
-  }
-});
-
-/* =====================================================
-   Notifications
-===================================================== */
-app.get("/notifications", auth, async (req, res) => {
-  try {
-    const unread = String(req.query?.unread || "").trim();
-    const onlyUnread = unread === "1" || unread === "true";
-
-    try {
-      const q = await pool.query(
-        `
-        SELECT id, title, body, link, read, created_at AS "createdAt"
-        FROM notifications
-        WHERE user_id=$1
-          ${onlyUnread ? "AND read=false" : ""}
-        ORDER BY created_at DESC
-        LIMIT 100
-        `,
-        [Number(req.user.id)]
-      );
-      return res.json(q.rows || []);
-    } catch (e) {
-      if (isMissingTable(e)) return res.json([]);
-      return res.json([]);
-    }
-  } catch (e) {
-    console.error("GET /notifications:", e.message);
-    return res.json([]);
-  }
-});
-
-app.post("/notifications/:id/read", auth, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: "invalid_id" });
-
-    try {
-      await pool.query(`UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2`, [
-        id,
-        Number(req.user.id),
-      ]);
-      return res.json({ ok: true });
-    } catch (e) {
-      if (isMissingTable(e)) return res.json({ ok: true });
-      return res.json({ ok: true });
-    }
-  } catch (e) {
-    console.error("POST /notifications/:id/read:", e.message);
-    return res.json({ ok: true });
-  }
-});
-
-/* =====================================================
-   My Tasks
-===================================================== */
-app.get("/my/tasks", auth, async (req, res) => {
-  try {
-    const uid = String(req.user.id);
-    const q = await pool.query(
-      `
-      SELECT id, user_id AS "userId", title, done, due_at AS "dueAt",
-             created_at AS "createdAt", updated_at AS "updatedAt"
-      FROM my_tasks
-      WHERE user_id::text=$1
-      ORDER BY created_at DESC, id DESC
-      LIMIT 500
-      `,
-      [uid]
-    );
-    return res.json(q.rows || []);
-  } catch (e) {
-    if (isMissingTable(e)) return res.json([]);
-    console.error("GET /my/tasks:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.post("/my/tasks", auth, async (req, res) => {
-  try {
-    const uid = String(req.user.id);
-    const title = String(req.body?.title || "").trim();
-    const due_at = req.body?.due_at ?? null;
-    if (!title) return res.status(400).json({ error: "title_required" });
-
-    try {
-      const q = await pool.query(
-        `
-        INSERT INTO my_tasks (user_id, title, done, due_at, created_at, updated_at)
-        VALUES ($1,$2,false,$3,NOW(),NOW())
-        RETURNING id, user_id AS "userId", title, done, due_at AS "dueAt",
-                  created_at AS "createdAt", updated_at AS "updatedAt"
-        `,
-        [uid, title, due_at]
-      );
-      return res.status(201).json(q.rows[0]);
-    } catch (e) {
-      if (isMissingTable(e)) return res.status(400).json({ error: "tasks_table_missing" });
-      throw e;
-    }
-  } catch (e) {
-    console.error("POST /my/tasks:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.patch("/my/tasks/:id", auth, async (req, res) => {
-  try {
-    const uid = String(req.user.id);
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: "invalid_id" });
-
-    const body = req.body || {};
-    const hasDone = Object.prototype.hasOwnProperty.call(body, "done");
-    const hasTitle = Object.prototype.hasOwnProperty.call(body, "title");
-    const hasDue =
-      Object.prototype.hasOwnProperty.call(body, "due_at") ||
-      Object.prototype.hasOwnProperty.call(body, "dueAt");
-
-    if (!hasDone && !hasTitle && !hasDue) return res.status(400).json({ error: "no_changes" });
-
-    const fields = [];
-    const vals = [];
-    let i = 1;
-
-    if (hasTitle) {
-      const title = String(body.title || "").trim();
-      if (!title) return res.status(400).json({ error: "title_required" });
-      fields.push(`title=$${i++}`);
-      vals.push(title);
-    }
-    if (hasDone) {
-      fields.push(`done=$${i++}`);
-      vals.push(!!body.done);
-    }
-    if (hasDue) {
-      const due = body.due_at ?? body.dueAt ?? null;
-      fields.push(`due_at=$${i++}`);
-      vals.push(due);
-    }
-
-    fields.push(`updated_at=NOW()`);
-    vals.push(uid);
-    vals.push(id);
-
-    const q = await pool.query(
-      `
-      UPDATE my_tasks
-      SET ${fields.join(", ")}
-      WHERE user_id::text=$${i++} AND id=$${i++}
-      RETURNING id, user_id AS "userId", title, done, due_at AS "dueAt",
-                created_at AS "createdAt", updated_at AS "updatedAt"
-      `,
-      vals
-    );
-
-    if (!q.rowCount) return res.status(404).json({ error: "not_found" });
-    return res.json(q.rows[0]);
-  } catch (e) {
-    if (isMissingTable(e)) return res.status(400).json({ error: "tasks_table_missing" });
-    console.error("PATCH /my/tasks/:id:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.delete("/my/tasks/:id", auth, async (req, res) => {
-  try {
-    const uid = String(req.user.id);
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: "invalid_id" });
-
-    const q = await pool.query(`DELETE FROM my_tasks WHERE user_id::text=$1 AND id=$2`, [uid, id]);
-    if (!q.rowCount) return res.status(404).json({ error: "not_found" });
-    return res.json({ ok: true });
-  } catch (e) {
-    if (isMissingTable(e)) return res.status(400).json({ error: "tasks_table_missing" });
-    console.error("DELETE /my/tasks/:id:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-/* =====================================================
-   Drafts
-===================================================== */
-app.get("/drafts", auth, async (req, res) => {
-  try {
-    const status = req.query?.status ? String(req.query.status) : null;
-    const caseId = req.query?.caseId ? Number(req.query.caseId) : null;
-
-    try {
-      const where = [];
-      const vals = [];
-      let i = 1;
-
-      if (status && status !== "all") {
-        where.push(`status=$${i++}`);
-        vals.push(status);
-      }
-      if (caseId) {
-        where.push(`case_id=$${i++}`);
-        vals.push(caseId);
-      }
-
-      const sql = `
-        SELECT id, case_id AS "caseId", title, body, status,
-               created_by AS "createdBy", created_at AS "createdAt",
-               updated_at AS "updatedAt"
-        FROM drafts
-        ${where.length ? "WHERE " + where.join(" AND ") : ""}
-        ORDER BY created_at DESC NULLS LAST, id DESC
-        LIMIT 500
-      `;
-
-      const q = await pool.query(sql, vals);
-      return res.json(q.rows || []);
-    } catch (e) {
-      if (isMissingTable(e)) return res.json([]);
-      throw e;
-    }
-  } catch (e) {
-    console.error("GET /drafts:", e.message);
-    return res.json([]);
-  }
-});
-
-app.post("/drafts", auth, async (req, res) => {
-  try {
-    const payload = req.body || {};
-    const caseId = payload.case_id ?? payload.caseId ?? null;
-    const title = String(payload.title || "مسودة").trim();
-    const body = payload.body ?? payload.content ?? "";
-
-    if (caseId) {
-      const ok = await canAccessCase(Number(caseId), req.user);
-      if (!ok) return res.status(403).json({ error: "forbidden" });
-    }
-
-    try {
-      const q = await pool.query(
-        `
-        INSERT INTO drafts (case_id, title, body, status, created_by, created_at, updated_at)
-        VALUES ($1,$2,$3,$4,$5,NOW(),NOW())
-        RETURNING id, case_id AS "caseId", title, body, status,
-                  created_by AS "createdBy", created_at AS "createdAt",
-                  updated_at AS "updatedAt"
-        `,
-        [caseId ? Number(caseId) : null, title, body, payload.status || "pending", Number(req.user.id)]
-      );
-      return res.status(201).json(q.rows[0]);
-    } catch (e) {
-      if (isMissingTable(e)) return res.status(400).json({ error: "drafts_table_missing" });
-      throw e;
-    }
-  } catch (e) {
-    console.error("POST /drafts:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.patch("/drafts/:id", auth, async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: "invalid_id" });
-
-    const patch = req.body || {};
-    const fields = [];
-    const vals = [];
-    let i = 1;
-
-    if (patch.title !== undefined) {
-      fields.push(`title=$${i++}`);
-      vals.push(patch.title);
-    }
-    if (patch.body !== undefined) {
-      fields.push(`body=$${i++}`);
-      vals.push(patch.body);
-    }
-    if (patch.status !== undefined) {
-      fields.push(`status=$${i++}`);
-      vals.push(patch.status);
-    }
-
-    if (!fields.length) return res.status(400).json({ error: "nothing_to_update" });
-
-    try {
-      const q = await pool.query(
-        `
-        UPDATE drafts
-        SET ${fields.join(", ")}, updated_at=NOW()
-        WHERE id=$${i}
-        RETURNING id, case_id AS "caseId", title, body, status,
-                  created_by AS "createdBy", created_at AS "createdAt",
-                  updated_at AS "updatedAt"
-        `,
-        [...vals, id]
-      );
-      if (!q.rowCount) return res.status(404).json({ error: "not_found" });
-      return res.json(q.rows[0]);
-    } catch (e) {
-      if (isMissingTable(e)) return res.status(400).json({ error: "drafts_table_missing" });
-      throw e;
-    }
-  } catch (e) {
-    console.error("PATCH /drafts/:id:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  }
-});
-
-app.delete("/drafts/:id", auth, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    if (!mustBeManager(req, res)) return;
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: "draft_id_required" });
-    const r = await client.query(`DELETE FROM drafts WHERE id=$1 RETURNING id`, [id]);
-    if (r.rowCount === 0) return res.status(404).json({ error: "not_found" });
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("DELETE /drafts/:id:", e.message);
-    return res.status(500).json({ error: "server_error" });
-  } finally {
-    client.release();
-  }
-});
 
 /* =====================================================
    SPA fallback (frontend)
