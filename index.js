@@ -9,6 +9,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { upload } from "./upload.js";
+import mountExtra from "./routes-extra.mjs";
 
 const { Pool } = pkg;
 
@@ -1202,9 +1203,9 @@ app.post("/cases/:id/docs/upload", auth, upload.single("file"), async (req, res)
 });
 
 /* =====================================================
-   Notes / Timeline / Notifications / Tasks / Drafts
-   (باقي ملفك كما هو)
+   Notes / Timeline / Notifications / Tasks / Drafts / Articles
 ===================================================== */
+mountExtra(app, pool, { auth, roleOf, canAccessCase });
 
 /* =====================================================
    SPA fallback (frontend)
@@ -1225,6 +1226,8 @@ if (fs.existsSync(publicDir)) {
       req.path.startsWith("/sessions") ||
       req.path.startsWith("/uploads") ||
       req.path.startsWith("/health") ||
+      req.path.startsWith("/articles") ||
+      req.path.startsWith("/tasks") ||
       req.path.startsWith("/__routes")
     ) {
       return next();
