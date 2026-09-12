@@ -1229,6 +1229,7 @@ if (fs.existsSync(publicDir)) {
       req.path.startsWith("/articles") ||
       req.path.startsWith("/tasks") ||
       req.path.startsWith("/financial") ||
+      req.path.startsWith("/moj-reports") ||
       req.path.startsWith("/__routes")
     ) {
       return next();
