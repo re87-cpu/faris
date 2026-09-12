@@ -28,6 +28,27 @@ export default function mountExtra(app, pool, deps) {
     }
   })();
 
+  /* ---- إنشاء جدول المعاملات المالية (آمن، لا يلمس بياناتك) ---- */
+  (async () => {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.financial_transactions (
+          id            serial PRIMARY KEY,
+          type          text NOT NULL CHECK (type IN ('income','expense','due')),
+          amount        numeric NOT NULL CHECK (amount > 0),
+          case_number   text,
+          case_label    text,
+          tx_date       date NOT NULL DEFAULT CURRENT_DATE,
+          description   text,
+          created_by    integer REFERENCES public.users(id) ON DELETE SET NULL,
+          created_at    timestamptz NOT NULL DEFAULT now()
+        )`);
+      console.log("✅ financial_transactions table ready");
+    } catch (e) {
+      console.error("financial_transactions table error:", e.message);
+    }
+  })();
+
   async function notify(client, userId, title, body, link) {
     if (!userId) return;
     try {
@@ -516,5 +537,86 @@ export default function mountExtra(app, pool, deps) {
     }
   });
 
-  console.log("✅ extra routes mounted (notifications / drafts / my-tasks / notes / timeline / articles)");
+  /* ===================== Financial (مدير فقط) ===================== */
+  // ملاحظة: عمود tx_date من نوع DATE — الـ pg driver يرجّعه ككائن Date على
+  // منتصف ليل بالتوقيت المحلي؛ لازم القراءة بدوال محلية (getFullYear/...)
+  // لا toISOString() (تحوّل لتوقيت UTC وقد تُرجع اليوم السابق).
+  function toDateOnly(v) {
+    if (v instanceof Date) {
+      const y = v.getFullYear(), m = String(v.getMonth() + 1).padStart(2, "0"), d = String(v.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    }
+    return String(v || "").slice(0, 10);
+  }
+  // "اليوم" بتوقيت الرياض تحديدًا — بدلاً من توقيت السيرفر (UTC عادة)، حتى لا
+  // يظهر تاريخ الأمس لمن يضيف معاملة بين منتصف الليل والثالثة فجرًا بتوقيت السعودية.
+  function riyadhToday() {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Riyadh", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    const get = (t) => parts.find((p) => p.type === t).value;
+    return `${get("year")}-${get("month")}-${get("day")}`;
+  }
+  function finOut(r) {
+    return {
+      id: r.id,
+      type: r.type,
+      amount: Number(r.amount),
+      caseId: r.case_number || "",
+      caseLabel: r.case_label || "",
+      date: toDateOnly(r.tx_date),
+      desc: r.description || "",
+    };
+  }
+
+  app.get("/financial/transactions", auth, async (req, res) => {
+    try {
+      if (!isManager(req.user)) return res.status(403).json({ error: "forbidden" });
+      const q = await pool.query(
+        `SELECT id, type, amount, case_number, case_label, tx_date, description
+           FROM public.financial_transactions
+          ORDER BY tx_date DESC, id DESC`
+      );
+      res.json(q.rows.map(finOut));
+    } catch (e) {
+      console.error("GET /financial/transactions:", e);
+      res.status(500).json({ error: "server_error" });
+    }
+  });
+
+  app.post("/financial/transactions", auth, async (req, res) => {
+    try {
+      if (!isManager(req.user)) return res.status(403).json({ error: "forbidden" });
+      const type = String(req.body?.type || "");
+      if (!["income", "expense", "due"].includes(type)) return res.status(400).json({ error: "bad_type" });
+      const amount = Number(req.body?.amount);
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: "bad_amount" });
+      const caseNumber = req.body?.caseId ? String(req.body.caseId).trim() : null;
+      const caseLabel = req.body?.caseLabel ? String(req.body.caseLabel).trim() : null;
+      const date = req.body?.date ? String(req.body.date) : riyadhToday();
+      const desc = req.body?.desc ? String(req.body.desc).trim().slice(0, 500) : null;
+
+      const q = await pool.query(
+        `INSERT INTO public.financial_transactions
+           (type, amount, case_number, case_label, tx_date, description, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [type, amount, caseNumber, caseLabel, date, desc, Number(req.user.id)]
+      );
+      res.status(201).json(finOut(q.rows[0]));
+    } catch (e) {
+      console.error("POST /financial/transactions:", e);
+      res.status(500).json({ error: "server_error" });
+    }
+  });
+
+  app.delete("/financial/transactions/:id", auth, async (req, res) => {
+    try {
+      if (!isManager(req.user)) return res.status(403).json({ error: "forbidden" });
+      await pool.query(`DELETE FROM public.financial_transactions WHERE id = $1`, [Number(req.params.id)]);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("DELETE /financial/transactions/:id:", e);
+      res.status(500).json({ error: "server_error" });
+    }
+  });
+
+  console.log("✅ extra routes mounted (notifications / drafts / my-tasks / notes / timeline / articles / financial)");
 }

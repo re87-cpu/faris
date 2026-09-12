@@ -1228,6 +1228,7 @@ if (fs.existsSync(publicDir)) {
       req.path.startsWith("/health") ||
       req.path.startsWith("/articles") ||
       req.path.startsWith("/tasks") ||
+      req.path.startsWith("/financial") ||
       req.path.startsWith("/__routes")
     ) {
       return next();
