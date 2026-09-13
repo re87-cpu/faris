@@ -618,12 +618,12 @@ export default function mountExtra(app, pool, deps) {
     }
   });
 
-  /* ===================== تقارير وزارة العدل الشهرية (مراقبة تلقائية تجريبية) ===================== */
+  /* ===================== إشعار التقرير الشهري لمستجدات الأنظمة (مراقبة تلقائية تجريبية) ===================== */
   // نراقب نفس الـ API الداخلي الذي يستخدمه موقع الوزارة (laws.moj.gov.sa) لعرض قائمة
   // الإصدارات الشهرية — لا يوجد RSS أو توثيق رسمي لهذا الـ API، فهذا اكتشاف عملي وقد
   // يتوقف يوم تغيّر الوزارة شكله. عند الفشل: نسجّل الخطأ فقط ولا نُعطّل بقية الموقع.
+  // ملاحظة: لا صفحة داخلية ولا نسخ/تحميل للتقرير — فقط إشعار للمدير برابطين خارجيين.
   const MOJ_LIST_URL = "https://laws-gateway.moj.gov.sa/apis/legislations/v1/IneternalDocument/List";
-  const MOJ_PDF_URL = "https://laws-gateway.moj.gov.sa/apis/legislations/v1/ExportDocument/pdf";
   const MOJ_HEADERS = {
     "content-type": "application/json",
     "accept": "application/json, text/plain, */*",
@@ -672,7 +672,12 @@ export default function mountExtra(app, pool, deps) {
 
       const ids = await managerIds();
       for (const uid of ids) {
-        await notify(null, uid, "تقرير شهري جديد من وزارة العدل", item.name || "", "/admin/moj-reports");
+        await notify(
+          null, uid,
+          "التقرير الشهري لمستجدات الأنظمة واللوائح والقرارات والتعاميم",
+          `صدر إصدار جديد: ${item.name || ""} — البوابة القانونية: https://laws.moj.gov.sa/`,
+          "https://sjp.moj.gov.sa/MonthlyReport"
+        );
       }
       console.log("📄 new MoJ monthly report discovered:", item.name);
     } catch (e) {
@@ -683,43 +688,5 @@ export default function mountExtra(app, pool, deps) {
   checkMojReports();
   setInterval(checkMojReports, 6 * 60 * 60 * 1000);
 
-  app.get("/moj-reports", auth, async (req, res) => {
-    try {
-      const q = await pool.query(
-        `SELECT moj_serial, name, release_hijri, unified_number, discovered_at AS "discoveredAt"
-           FROM public.moj_monthly_reports
-          ORDER BY discovered_at DESC`
-      );
-      res.json(q.rows.map((r) => ({
-        name: r.name,
-        releaseHijri: r.release_hijri,
-        unifiedNumber: r.unified_number,
-        discoveredAt: r.discoveredAt,
-        fileUrl: `/moj-reports/${encodeURIComponent(r.moj_serial)}/file`,
-      })));
-    } catch (e) {
-      console.error("GET /moj-reports:", e);
-      res.status(500).json({ error: "server_error" });
-    }
-  });
-
-  app.get("/moj-reports/:serial/file", auth, async (req, res) => {
-    try {
-      const serial = String(req.params.serial || "");
-      const q = await pool.query(`SELECT name FROM public.moj_monthly_reports WHERE moj_serial = $1`, [serial]);
-      if (!q.rowCount) return res.status(404).json({ error: "not_found" });
-
-      const pdfRes = await fetch(`${MOJ_PDF_URL}?Serial=${encodeURIComponent(serial)}`, { headers: MOJ_HEADERS });
-      if (!pdfRes.ok) return res.status(502).json({ error: "moj_fetch_failed" });
-
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `inline; filename="${(q.rows[0].name || "report").replace(/"/g, "")}.pdf"`);
-      res.send(Buffer.from(await pdfRes.arrayBuffer()));
-    } catch (e) {
-      console.error("GET /moj-reports/:serial/file:", e);
-      res.status(500).json({ error: "server_error" });
-    }
-  });
-
-  console.log("✅ extra routes mounted (notifications / drafts / my-tasks / notes / timeline / articles / financial / moj-reports)");
+  console.log("✅ extra routes mounted (notifications / drafts / my-tasks / notes / timeline / articles / financial / moj-report-notice)");
 }
