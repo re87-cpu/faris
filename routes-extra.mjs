@@ -3,6 +3,8 @@
 // تُركّب من index.js:  mountExtra(app, pool, { auth, roleOf, canAccessCase })
 // كل الجداول موجودة مسبقًا في قاعدة البيانات عدا "articles" (يُنشأ تلقائيًا عند الإقلاع).
 
+import { sendPushToUser } from "./push.mjs";
+
 export default function mountExtra(app, pool, deps) {
   const { auth, roleOf, canAccessCase } = deps;
   const isManager = (u) => roleOf(u) === "manager";
@@ -49,6 +51,56 @@ export default function mountExtra(app, pool, deps) {
     }
   })();
 
+  /* ---- إنشاء جدول أجهزة الإشعارات الفورية (آمن، لا يلمس بياناتك) ---- */
+  (async () => {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS public.device_tokens (
+          id          serial PRIMARY KEY,
+          user_id     integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+          token       text NOT NULL,
+          platform    text CHECK (platform IN ('ios','android')),
+          created_at  timestamptz NOT NULL DEFAULT now(),
+          updated_at  timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (user_id, token)
+        )`);
+      console.log("✅ device_tokens table ready");
+    } catch (e) {
+      console.error("device_tokens table error:", e.message);
+    }
+  })();
+
+  /* ===================== تسجيل جهاز للإشعارات الفورية ===================== */
+  app.post("/notifications/register-device", auth, async (req, res) => {
+    try {
+      const token = String(req.body?.token || "").trim();
+      const platform = String(req.body?.platform || "").trim();
+      if (!token || !["ios", "android"].includes(platform)) return res.status(400).json({ error: "bad_input" });
+      await pool.query(
+        `INSERT INTO public.device_tokens (user_id, token, platform)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (user_id, token) DO UPDATE SET platform = $3, updated_at = now()`,
+        [Number(req.user.id), token, platform]
+      );
+      res.status(201).json({ ok: true });
+    } catch (e) {
+      console.error("POST /notifications/register-device:", e);
+      res.status(500).json({ error: "server_error" });
+    }
+  });
+
+  app.post("/notifications/unregister-device", auth, async (req, res) => {
+    try {
+      const token = String(req.body?.token || "").trim();
+      if (!token) return res.status(400).json({ error: "bad_input" });
+      await pool.query(`DELETE FROM public.device_tokens WHERE user_id = $1 AND token = $2`, [Number(req.user.id), token]);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("POST /notifications/unregister-device:", e);
+      res.status(500).json({ error: "server_error" });
+    }
+  });
+
   async function notify(client, userId, title, body, link) {
     if (!userId) return;
     try {
@@ -60,6 +112,9 @@ export default function mountExtra(app, pool, deps) {
     } catch (e) {
       console.error("notify error:", e.message);
     }
+    // إشعار فوري (Push) — إضافي بحت، بمحاولة معزولة تمامًا؛ فشله أو غياب إعداد
+    // Firebase لا يؤثر إطلاقًا على نجاح الإشعار داخل النظام أعلاه.
+    sendPushToUser(pool, userId, { title, body, link }).catch(() => {});
   }
   async function managerIds() {
     try {
