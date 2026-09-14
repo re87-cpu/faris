@@ -1,0 +1,1 @@
+import{j as t}from"./index-R_77TUOj.js";import{O as r}from"./vendor-Cc0IN9mT.js";import{S as i}from"./StaffTopbar-Cn9uiRpm.js";import"./logo-GzDpYhfm.js";function o(){return t.jsxs("div",{className:"page",dir:"rtl",style:{minHeight:"100vh"},children:[t.jsx(i,{}),t.jsx("div",{style:{width:"min(1200px,95%)",margin:"18px auto"},children:t.jsx(r,{})})]})}export{o as default};
