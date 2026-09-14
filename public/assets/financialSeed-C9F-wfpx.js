@@ -1,0 +1,1 @@
+const s=t=>Math.round(t).toLocaleString("en-US"),u={income:"إيراد",expense:"مصروف",due:"مستحق"};function r(t){const o=t.filter(e=>e.type==="income").reduce((e,n)=>e+n.amount,0),a=t.filter(e=>e.type==="expense").reduce((e,n)=>e+n.amount,0),c=t.filter(e=>e.type==="due").reduce((e,n)=>e+n.amount,0);return{totalIncome:o,totalExpense:a,totalDue:c,net:o-a}}export{s as a,r as f,u as t};

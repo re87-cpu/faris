@@ -1,0 +1,1 @@
+function o(e){const t=document.createElement("div");t.className="q-alert",t.style.cssText="position:fixed;bottom:18px;right:18px;max-width:360px;z-index:9999;transition:all .3s",t.textContent=e,document.body.appendChild(t),setTimeout(()=>{t.style.opacity="0",t.style.transform="translateY(8px)"},1800),setTimeout(()=>t.remove(),2300)}export{o as t};
