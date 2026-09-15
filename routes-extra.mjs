@@ -731,7 +731,7 @@ export default function mountExtra(app, pool, deps) {
           null, uid,
           "التقرير الشهري لمستجدات الأنظمة واللوائح والقرارات والتعاميم",
           `صدر إصدار جديد: ${item.name || ""} — البوابة القانونية: https://laws.moj.gov.sa/`,
-          "https://sjp.moj.gov.sa/MonthlyReport"
+          "https://laws.moj.gov.sa/ar/legislations-regulations/?type=1"
         );
       }
       console.log("📄 new MoJ monthly report discovered:", item.name);
